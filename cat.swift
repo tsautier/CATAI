@@ -55,7 +55,7 @@ struct L10n {
     ]
 
     static func randomMeow() -> String {
-        (meows[lang] ?? meows["fr"]!).randomElement()!
+        (meows[lang] ?? meows["fr"] ?? ["Miaou~"]).randomElement() ?? "Miaou~"
     }
 }
 
@@ -72,8 +72,8 @@ struct CatColorDef {
     let skills: [String: String]
 
     func prompt(name: String, lang: String) -> String {
-        let t = traits[lang] ?? traits["fr"]!
-        let s = skills[lang] ?? skills["fr"]!
+        let t = traits[lang] ?? traits["fr"] ?? ""
+        let s = skills[lang] ?? skills["fr"] ?? ""
         switch lang {
         case "en": return "You are a little \(t) cat named \(name). \(s) Respond briefly with cat sounds (meow, purr, mrrp). Max 2-3 sentences."
         case "es": return "Eres un gatito \(t) llamado \(name). \(s) Responde brevemente con sonidos de gato (miau, purr, mrrp). Máximo 2-3 frases."
@@ -494,7 +494,7 @@ class ChatBubbleController {
         bubbleH = bodyH + tailH
 
         let oldFrame = window.frame
-        if oldFrame.height > 0 && oldFrame.origin.y != 0 {
+        if window.isVisible {
             window.setFrame(NSRect(x: oldFrame.origin.x, y: oldFrame.origin.y,
                                    width: bubbleW, height: bubbleH), display: false)
         } else {
@@ -1010,6 +1010,7 @@ class SettingsWindowController {
     var currentModel = ""
     var selectedColorId: String?
     var sizeLabel: PixelLabel?
+    var scaleTimer: Timer?
 
     let W: CGFloat = 320
     let H: CGFloat = 560
@@ -1017,10 +1018,10 @@ class SettingsWindowController {
     func setup(scale: CGFloat, model: String) {
         currentScale = scale; currentModel = model
         if window == nil {
-            let screen = NSScreen.main!
+            let screenFrame = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
             window = NSWindow(
-                contentRect: NSRect(x: (screen.frame.width - W) / 2,
-                                    y: (screen.frame.height - H) / 2, width: W, height: H),
+                contentRect: NSRect(x: (screenFrame.width - W) / 2,
+                                    y: (screenFrame.height - H) / 2, width: W, height: H),
                 styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = "~ Cat Settings ~"
             window.level = .floating; window.isReleasedWhenClosed = false
@@ -1138,12 +1139,11 @@ class SettingsWindowController {
         let slider = PixelSlider()
         slider.frame = NSRect(x: 24, y: 118, width: W - 48, height: 28)
         slider.minValue = MIN_SCALE; slider.maxValue = MAX_SCALE; slider.value = currentScale
-        var scaleTimer: Timer?
         slider.onChange = { [weak self] v in
             self?.sizeLabel?.text = String(format: "x%.1f", v)
             self?.currentScale = v
-            scaleTimer?.invalidate()
-            scaleTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { _ in
+            self?.scaleTimer?.invalidate()
+            self?.scaleTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { _ in
                 self?.onScaleChanged?(v)
             }
         }
@@ -1314,7 +1314,7 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
         // Prevent duplicate color
         guard !catConfigs.contains(where: { $0.colorId == colorId }) else { return }
 
-        let name = cd.names[L10n.lang] ?? cd.names["fr"]!
+        let name = cd.names[L10n.lang] ?? cd.names["fr"] ?? cd.id
         let cfg = CatConfig(id: UUID().uuidString, colorId: colorId, name: name)
         catConfigs.append(cfg); saveConfigs(catConfigs)
         createInstance(config: cfg, index: catInstances.count)
@@ -1362,7 +1362,7 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
         recomputeSize()
         for cat in catInstances {
             cat.applyScale(newW: displayW, newH: displayH, meta: meta, catDir: catDir)
-            if cat.posMode == .onDock { cat.y = dockHeight; cat.window.setFrameOrigin(NSPoint(x: cat.x, y: cat.y)) }
+            if cat.posMode == .onDock { cat.showOnDock(dockH: dockHeight) }
         }
     }
 
@@ -1402,7 +1402,8 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
         ctrl.getConfigs = { [weak self] in self?.catConfigs ?? [] }
         ctrl.getPreview = { [weak self] colorId in
             guard let self = self, let cd = colorDef(colorId) else { return nil }
-            let path = (self.catDir as NSString).appendingPathComponent(self.meta.frames.rotations["south"]!)
+            guard let southRel = self.meta.frames.rotations["south"] else { return nil }
+            let path = (self.catDir as NSString).appendingPathComponent(southRel)
             guard let img = NSImage(contentsOfFile: path) else { return nil }
             return tintSprite(img, color: cd)
         }
@@ -1454,7 +1455,7 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
             if dh > 10 && abs(dh - dockHeight) > 2 {
                 dockHeight = dh
                 for cat in catInstances where cat.posMode == .onDock && !cat.dragging {
-                    cat.y = dockHeight; cat.window.setFrameOrigin(NSPoint(x: cat.x, y: cat.y))
+                    cat.showOnDock(dockH: dockHeight)
                 }
             }
             if !dockVisible { showAllOnDock() }
@@ -1555,6 +1556,13 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
 
     func renderTick() { for cat in catInstances { cat.renderTick(screenW: screenW) } }
     func behaviorTick() { for cat in catInstances { cat.behaviorTick(screenW: screenW) } }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        timers.forEach { $0.invalidate() }
+        if let m = localMonitor { NSEvent.removeMonitor(m) }
+        if let m = globalMonitor { NSEvent.removeMonitor(m) }
+        for cat in catInstances { cat.cleanup() }
+    }
 }
 
 // MARK: - Main
