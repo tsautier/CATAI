@@ -97,5 +97,3 @@ Click the 🐱 menu bar icon → Settings:
 MIT
 
 ---
-
-*Built with Claude Code*
