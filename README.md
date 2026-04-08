@@ -12,6 +12,7 @@ Virtual desktop pet cats for macOS — pixel art cats that live on your dock and
 - **Window perching** — When dock auto-hides, cats teleport to sit on top of your active window
 - **Multi-cat** — Up to 6 cats with distinct colors and personalities
 - **AI chat** — Click a cat to open a pixel-art chat bubble, powered by [Ollama](https://ollama.ai)
+- **Mouse tracking** — Cats notice your cursor and turn to look at it. Get too close and they'll chase it!
 - **Random meows** — Cats spontaneously say "Miaou~", "Prrr...", "Mrrp!" in cute speech bubbles
 - **Pixel art UI** — Settings panel, chat bubbles, and controls all in retro pixel style
 - **Menu bar icon** — 🐱 icon with quick access to settings and quit
@@ -33,12 +34,12 @@ Virtual desktop pet cats for macOS — pixel art cats that live on your dock and
 
 Each cat has 368 hand-drawn sprites across 8 directions:
 
-- **Walking** — 8 frames per direction
+- **Walking / Chasing** — 8 frames per direction (all 8 directions!)
 - **Eating** — 11 frames per direction
 - **Drinking** — 8 frames per direction
 - **Angry** — 9 frames per direction
 - **Waking up** — 9 frames per direction
-- **Idle / Sleeping** — Static rotation sprites
+- **Idle / Looking / Sleeping** — Static rotation sprites (8 directions)
 
 ## Requirements
 
@@ -84,7 +85,7 @@ Click the 🐱 menu bar icon → Settings:
 
 ## How It Works
 
-- Single native Swift file (~1500 lines), no external dependencies
+- Single native Swift file (~1600 lines), no external dependencies
 - `NSWindow` with transparent background for overlay rendering
 - `CGWindowListCopyWindowInfo` for detecting frontmost windows
 - Dock auto-hide detection via mouse position polling at 30 FPS
@@ -97,7 +98,7 @@ Click the 🐱 menu bar icon → Settings:
 ```
 .
 ├── cat.swift              # Entire application (single file)
-├── cat                    # Compiled binary
+├── build.sh               # Build .app bundle script
 └── cute_orange_cat/       # Sprite assets
     ├── metadata.json      # Animation & rotation definitions
     ├── rotations/         # 8 static direction sprites (68x68 PNG)
@@ -109,8 +110,38 @@ Click the 🐱 menu bar icon → Settings:
         └── waking-getting-up/
 ```
 
+## Changelog
+
+### v1.2 — Mouse tracking & code polish (2026-04-08)
+- Cats now look toward your cursor when it's nearby (8 directions!)
+- Cats chase the cursor when it gets close enough
+- Sleeping cats wake up if you wave the cursor near them
+- Centralized UI color palette for consistency
+- Simplified Ollama model fetching
+- Fixed angle mapping gap at 360 degrees
+- Code optimizations (`hypot`, removed dead code)
+
+### v1.1 — Bug fixes (2026-04-07)
+- Fix cats floating after resize or dock refresh
+- Fix chat bubble losing position near screen edge
+- Remove force unwraps with safe fallbacks
+- Fix potential crash in clamshell mode
+- Fix memory leak on quit (monitors & timers)
+- Fix fragile scale slider timer
+
+### v1.0 — Initial release (2026-04-06)
+- Multi-cat support with 6 color variants
+- Distinct AI personalities per color
+- Pixel art UI with custom controls
+- Walk on dock and window title bars
+- Random meow speech bubbles
+- Chat memory persistence
+- macOS .app bundle with build script
+
+---
+
+> *Psss... a new cat is coming! Multiplatform port in progress — Windows & Linux soon!* 🐱✨
+
 ## License
 
 MIT
-
----

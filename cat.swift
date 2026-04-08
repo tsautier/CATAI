@@ -3,6 +3,13 @@ import Foundation
 
 // MARK: - Constants
 
+// UI palette (pixel art theme)
+let UI_BROWN  = NSColor(red: 0.3, green: 0.2, blue: 0.1, alpha: 1)
+let UI_CREAM  = NSColor(red: 0.95, green: 0.9, blue: 0.8, alpha: 1)
+let UI_ORANGE = NSColor(red: 1.0, green: 0.6, blue: 0.2, alpha: 1)
+let UI_GOLD   = NSColor(red: 1.0, green: 0.8, blue: 0.3, alpha: 1)
+let UI_INPUT  = NSColor(red: 1, green: 0.98, blue: 0.93, alpha: 1)
+
 let RENDER_FPS: TimeInterval = 1.0 / 10.0
 let BEHAVIOR_SEC: TimeInterval = 1.0
 let DOCK_POLL_SEC: TimeInterval = 5.0
@@ -18,13 +25,27 @@ let MIN_SCALE: CGFloat = 0.5
 let MAX_SCALE: CGFloat = 3.0
 let MEM_MAX = 20
 
-enum CatState { case idle, walking, eating, drinking, angry, sleeping, wakingUp }
+enum CatState { case idle, walking, eating, drinking, angry, sleeping, wakingUp, chasing, looking }
 
 let animKeys: [CatState: String] = [
     .walking: "running-8-frames", .eating: "eating", .drinking: "drinking",
-    .angry: "angry", .wakingUp: "waking-getting-up",
+    .angry: "angry", .wakingUp: "waking-getting-up", .chasing: "running-8-frames",
 ]
 let oneShotStates: Set<CatState> = [.eating, .drinking, .angry, .wakingUp]
+
+// Map angle (in degrees, 0=right, counter-clockwise) to sprite direction name
+func directionFromAngle(_ angleDeg: CGFloat) -> String {
+    let a = ((angleDeg.truncatingRemainder(dividingBy: 360)) + 360).truncatingRemainder(dividingBy: 360)
+    if a >= 337.5 || a < 22.5  { return "east" }
+    if a < 67.5  { return "north-east" }
+    if a < 112.5 { return "north" }
+    if a < 157.5 { return "north-west" }
+    if a < 202.5 { return "west" }
+    if a < 247.5 { return "south-west" }
+    if a < 292.5 { return "south" }
+    if a < 337.5 { return "south-east" }
+    return "south"
+}
 
 // MARK: - Localization
 
@@ -157,16 +178,14 @@ func deleteMemory(_ catId: String) { UserDefaults.standard.removeObject(forKey: 
 
 // MARK: - Ollama API
 
-struct OllamaModel { let name: String }
-
-func fetchOllamaModels(completion: @escaping ([OllamaModel]) -> Void) {
+func fetchOllamaModels(completion: @escaping ([String]) -> Void) {
     guard let url = URL(string: "\(OLLAMA_URL)/api/tags") else { completion([]); return }
     URLSession.shared.dataTask(with: url) { data, _, _ in
         guard let data = data,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let models = json["models"] as? [[String: Any]]
         else { DispatchQueue.main.async { completion([]) }; return }
-        let result = models.compactMap { $0["name"] as? String }.map { OllamaModel(name: $0) }
+        let result = models.compactMap { $0["name"] as? String }
         DispatchQueue.main.async { completion(result) }
     }.resume()
 }
@@ -351,8 +370,8 @@ func loadTintAndScale(path: String, to size: NSSize, color: CatColorDef) -> NSIm
 // MARK: - Pixel Art UI Components
 
 class PixelBorder: NSView {
-    var borderColor = NSColor(red: 0.3, green: 0.2, blue: 0.1, alpha: 1)
-    var fillColor = NSColor(red: 0.95, green: 0.9, blue: 0.8, alpha: 1)
+    var borderColor = UI_BROWN
+    var fillColor = UI_CREAM
     var pixelSize: CGFloat = 3
 
     override func draw(_ dirtyRect: NSRect) {
@@ -381,10 +400,10 @@ class PixelSlider: NSView {
     var minValue: CGFloat = 0.5
     var maxValue: CGFloat = 3.0
     var onChange: ((CGFloat) -> Void)?
-    private let trackColor = NSColor(red: 0.3, green: 0.2, blue: 0.1, alpha: 1)
-    private let fillLeft = NSColor(red: 1.0, green: 0.6, blue: 0.2, alpha: 1)
-    private let knobColor = NSColor(red: 1.0, green: 0.8, blue: 0.3, alpha: 1)
-    private let knobBorder = NSColor(red: 0.3, green: 0.2, blue: 0.1, alpha: 1)
+    private let trackColor = UI_BROWN
+    private let fillLeft = UI_ORANGE
+    private let knobColor = UI_GOLD
+    private let knobBorder = UI_BROWN
     private let px: CGFloat = 3
 
     override func draw(_ dirtyRect: NSRect) {
@@ -410,7 +429,7 @@ class PixelSlider: NSView {
 
 class PixelLabel: NSView {
     var text: String = "" { didSet { needsDisplay = true } }
-    var textColor = NSColor(red: 0.3, green: 0.2, blue: 0.1, alpha: 1)
+    var textColor = UI_BROWN
     var fontSize: CGFloat = 13
     var alignment: NSTextAlignment = .center
     var wraps = false
@@ -519,8 +538,8 @@ class ChatBubbleController {
         inputField.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
         inputField.placeholderString = L10n.s("talk")
         inputField.isBordered = true; inputField.bezelStyle = .squareBezel
-        inputField.backgroundColor = NSColor(red: 1, green: 0.98, blue: 0.93, alpha: 1)
-        inputField.textColor = NSColor(red: 0.3, green: 0.2, blue: 0.1, alpha: 1)
+        inputField.backgroundColor = UI_INPUT
+        inputField.textColor = UI_BROWN
         inputField.focusRingType = .none
         inputField.target = self; inputField.action = #selector(inputSubmitted(_:))
         inputField.stringValue = savedInputText
@@ -559,8 +578,8 @@ class ChatBubbleController {
 
 class PixelTail: NSView {
     override func draw(_ dirtyRect: NSRect) {
-        let fill = NSColor(red: 0.95, green: 0.9, blue: 0.8, alpha: 1)
-        let border = NSColor(red: 0.3, green: 0.2, blue: 0.1, alpha: 1)
+        let fill = UI_CREAM
+        let border = UI_BROWN
         let px: CGFloat = 3; let cx = bounds.midX
         border.set()
         for row in 0..<5 {
@@ -596,6 +615,13 @@ class CatInstance {
     var destX: CGFloat = 0
     var displayW: CGFloat = 0
     var displayH: CGFloat = 0
+
+    // Mouse tracking
+    static let LOOK_RADIUS: CGFloat = 200
+    static let CHASE_RADIUS: CGFloat = 120
+    static let CHASE_SPEED: CGFloat = 3
+    static let CHASE_GIVE_UP: CGFloat = 300
+    var chaseTicks = 0
 
     var dragging = false
     var dragOffset: NSPoint = .zero
@@ -682,17 +708,47 @@ class CatInstance {
     }
 
     func currentImage() -> NSImage {
-        if state == .idle || state == .sleeping { return fallbackImage }
+        if state == .idle || state == .sleeping || state == .looking { return fallbackImage }
         if let key = animKeys[state], let frames = animations[key]?[direction], !frames.isEmpty {
             return frames[frameIndex % frames.count]
         }
         return fallbackImage
     }
 
+    private func clampAndSync(screenW: CGFloat) {
+        if posMode == .onDock {
+            x = max(0, min(x, screenW - displayW))
+        } else if let wb = winBounds {
+            x = max(wb.minX, min(x, wb.maxX - displayW))
+        }
+        window.setFrameOrigin(NSPoint(x: x, y: y))
+        if let b = chatBubble, b.isVisible { b.show(aboveCatAt: window.frame) }
+        if let mw = meowWindow, mw.isVisible {
+            let bw = mw.frame.width
+            mw.setFrameOrigin(NSPoint(x: window.frame.midX - bw / 2, y: window.frame.maxY + 4))
+        }
+    }
+
     func renderTick(screenW: CGFloat) {
         guard posMode != .hidden || dragging else { return }
 
-        if state == .walking {
+        if state == .chasing {
+            let mouse = NSEvent.mouseLocation
+            let dx = mouse.x - (x + displayW / 2)
+            let dy = mouse.y - (y + displayH / 2)
+            let dist = hypot(dx, dy)
+
+            if dist > CatInstance.CHASE_GIVE_UP || chaseTicks > 80 {
+                state = .idle; frameIndex = 0; idleTicks = 0; chaseTicks = 0
+            } else if dist < displayW * 0.4 {
+                state = .idle; frameIndex = 0; idleTicks = 0; chaseTicks = 0
+            } else {
+                direction = directionFromAngle(atan2(dy, dx) * 180.0 / .pi)
+                x += (dx / dist) * CatInstance.CHASE_SPEED
+                frameIndex += 1; chaseTicks += 1
+            }
+            clampAndSync(screenW: screenW)
+        } else if state == .walking {
             let dx = destX - x
             if abs(dx) <= WALK_SPEED {
                 x = destX; state = .idle; frameIndex = 0; idleTicks = 0
@@ -700,13 +756,7 @@ class CatInstance {
                 let step: CGFloat = dx > 0 ? WALK_SPEED : -WALK_SPEED
                 x += step; direction = step > 0 ? "east" : "west"; frameIndex += 1
             }
-            if posMode == .onDock {
-                x = max(0, min(x, screenW - displayW))
-            } else if let wb = winBounds {
-                x = max(wb.minX, min(x, wb.maxX - displayW))
-            }
-            window.setFrameOrigin(NSPoint(x: x, y: y))
-            if let b = chatBubble, b.isVisible { b.show(aboveCatAt: window.frame) }
+            clampAndSync(screenW: screenW)
         } else if oneShotStates.contains(state) {
             if let key = animKeys[state], let frames = animations[key]?[direction] {
                 if frameIndex >= frames.count - 1 { state = .idle; frameIndex = 0; idleTicks = 0 }
@@ -716,9 +766,35 @@ class CatInstance {
         imageView.image = currentImage()
     }
 
+    func mouseDistanceAndDirection() -> (dist: CGFloat, dir: String) {
+        let mouse = NSEvent.mouseLocation
+        let cx = x + displayW / 2, cy = y + displayH / 2
+        let dx = mouse.x - cx, dy = mouse.y - cy
+        return (hypot(dx, dy), directionFromAngle(atan2(dy, dx) * 180.0 / .pi))
+    }
+
     func behaviorTick(screenW: CGFloat) {
         guard posMode != .hidden else { return }
         if chatBubble?.isVisible == true { return }
+
+        // Mouse awareness — check cursor proximity
+        let (mouseDist, mouseDir) = mouseDistanceAndDirection()
+
+        if state == .idle || state == .looking {
+            // Look at cursor if nearby
+            if mouseDist < CatInstance.LOOK_RADIUS && mouseDist > displayW * 0.4 {
+                direction = mouseDir
+                if state != .looking { state = .looking; idleTicks = 0 }
+                // Chance to start chasing if cursor is close enough
+                if mouseDist < CatInstance.CHASE_RADIUS && Double.random(in: 0..<1) < 0.15 {
+                    state = .chasing; frameIndex = 0; chaseTicks = 0; hideMeow()
+                    return
+                }
+                return  // keep looking, skip normal behavior
+            } else if state == .looking {
+                state = .idle; idleTicks = 0  // cursor left, go back to idle
+            }
+        }
 
         if state == .idle {
             idleTicks += 1
@@ -738,8 +814,13 @@ class CatInstance {
             else if r < 0.35 { state = .drinking; frameIndex = 0 }
             else if r < 0.38 { showRandomMeow() }
         } else if state == .sleeping {
-            idleTicks += 1
-            if idleTicks > Int.random(in: 5...15) { state = .wakingUp; frameIndex = 0; idleTicks = 0 }
+            // Wake up if cursor is very close
+            if mouseDist < CatInstance.CHASE_RADIUS {
+                state = .wakingUp; frameIndex = 0; idleTicks = 0
+            } else {
+                idleTicks += 1
+                if idleTicks > Int.random(in: 5...15) { state = .wakingUp; frameIndex = 0; idleTicks = 0 }
+            }
         }
     }
 
@@ -901,8 +982,8 @@ class ColorBubblesView: NSView {
 
             // Border
             let isSel = selectedColorId == c.id && activeColorIds.contains(c.id)
-            (isSel ? NSColor(red: 1, green: 0.8, blue: 0.3, alpha: 1) :
-                     NSColor(red: 0.3, green: 0.2, blue: 0.1, alpha: 1)).set()
+            (isSel ? UI_GOLD :
+                     UI_BROWN).set()
             path.lineWidth = isSel ? 3 : 2; path.stroke()
 
             // Dim if not active
@@ -966,9 +1047,9 @@ class FlagRowView: NSView {
         for (lang, emoji) in flags {
             if lang == selectedLang {
                 let px: CGFloat = 2
-                NSColor(red: 0.3, green: 0.2, blue: 0.1, alpha: 1).set()
+                UI_BROWN.set()
                 NSBezierPath(rect: NSRect(x: x - px, y: 1, width: fw + px*2, height: bounds.height - 2)).fill()
-                NSColor(red: 1, green: 0.8, blue: 0.3, alpha: 1).set()
+                UI_GOLD.set()
                 NSBezierPath(rect: NSRect(x: x, y: 1 + px, width: fw, height: bounds.height - 2 - px*2)).fill()
             }
             let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 22)]
@@ -1025,7 +1106,7 @@ class SettingsWindowController {
                 styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = "~ Cat Settings ~"
             window.level = .floating; window.isReleasedWhenClosed = false
-            window.backgroundColor = NSColor(red: 0.95, green: 0.9, blue: 0.8, alpha: 1)
+            window.backgroundColor = UI_CREAM
         }
         if selectedColorId == nil { selectedColorId = getConfigs?().first?.colorId }
         buildContent()
@@ -1102,8 +1183,8 @@ class SettingsWindowController {
             nf.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
             nf.stringValue = cfg?.name ?? cd.names[L10n.lang] ?? ""
             nf.bezelStyle = .squareBezel
-            nf.backgroundColor = NSColor(red: 1, green: 0.98, blue: 0.93, alpha: 1)
-            nf.textColor = NSColor(red: 0.3, green: 0.2, blue: 0.1, alpha: 1)
+            nf.backgroundColor = UI_INPUT
+            nf.textColor = UI_BROWN
             nf.focusRingType = .none
             nf.target = self; nf.action = #selector(nameEdited(_:))
             content.addSubview(nf)
@@ -1166,8 +1247,8 @@ class SettingsWindowController {
             popup.removeAllItems()
             if models.isEmpty { popup.addItem(withTitle: L10n.s("no_ollama")) }
             else {
-                for m in models { popup.addItem(withTitle: m.name) }
-                if let idx = models.firstIndex(where: { $0.name == self.currentModel }) {
+                for m in models { popup.addItem(withTitle: m) }
+                if let idx = models.firstIndex(of: self.currentModel) {
                     popup.selectItem(at: idx)
                 }
             }
