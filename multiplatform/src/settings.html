@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>~ Cat Settings ~</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: monospace;
+      background: #f2e6d0;
+      color: #4d3319;
+      padding: 20px;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    .border-box {
+      border: 3px solid #4d3319;
+      border-radius: 4px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 14px;
+      margin-bottom: 16px;
+      letter-spacing: 2px;
+    }
+
+    h2 {
+      font-size: 12px;
+      text-align: center;
+      margin-bottom: 10px;
+      letter-spacing: 1px;
+    }
+
+    /* Language flags */
+    .flags {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .flag-btn {
+      font-size: 22px;
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 2px solid transparent;
+      border-radius: 4px;
+      background: none;
+      transition: all 0.1s;
+    }
+    .flag-btn:hover { border-color: #4d3319; }
+    .flag-btn.active {
+      border-color: #4d3319;
+      background: #ffcc4d;
+    }
+
+    /* Color bubbles */
+    .colors {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    .color-dot {
+      width: 36px; height: 36px;
+      border-radius: 50%;
+      border: 2px solid #4d3319;
+      cursor: pointer;
+      position: relative;
+      transition: all 0.1s;
+    }
+    .color-dot:hover { transform: scale(1.1); }
+    .color-dot.active { border-width: 3px; border-color: #ffcc4d; box-shadow: 0 0 0 2px #4d3319; }
+
+    /* Cat preview */
+    .preview {
+      text-align: center;
+      margin-bottom: 12px;
+    }
+    .preview img {
+      width: 64px; height: 64px;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+
+    /* Personality text */
+    .trait {
+      font-size: 11px;
+      text-align: center;
+      color: #7a5530;
+      margin-bottom: 12px;
+    }
+
+    /* Name input */
+    .name-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .name-row label { font-size: 11px; font-weight: bold; white-space: nowrap; }
+    .name-row input {
+      flex: 1;
+      padding: 4px 8px;
+      font-family: monospace;
+      font-size: 12px;
+      border: 2px solid #4d3319;
+      border-radius: 3px;
+      background: #fffaef;
+      color: #4d3319;
+      outline: none;
+    }
+
+    /* Size slider */
+    .slider-row {
+      margin-bottom: 6px;
+    }
+    .slider-label {
+      text-align: center;
+      font-size: 11px;
+      font-weight: bold;
+      margin-bottom: 4px;
+    }
+    input[type="range"] {
+      width: 100%;
+      accent-color: #ff9933;
+      cursor: pointer;
+    }
+
+    /* Model select */
+    .model-row {
+      margin-bottom: 6px;
+    }
+    select {
+      width: 100%;
+      padding: 4px 8px;
+      font-family: monospace;
+      font-size: 11px;
+      border: 2px solid #4d3319;
+      border-radius: 3px;
+      background: #fffaef;
+      color: #4d3319;
+      outline: none;
+      cursor: pointer;
+    }
+
+    /* Close button */
+    .close-btn {
+      display: block;
+      margin: 12px auto 0;
+      padding: 6px 24px;
+      font-family: monospace;
+      font-size: 12px;
+      font-weight: bold;
+      background: #4d3319;
+      color: #f2e6d0;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .close-btn:hover { background: #6b4a28; }
+  </style>
+</head>
+<body>
+  <div class="border-box">
+    <h1>:: SETTINGS ::</h1>
+
+    <!-- Language -->
+    <h2 id="lang-title">LANGUE</h2>
+    <div class="flags">
+      <button class="flag-btn" data-lang="fr">🇫🇷</button>
+      <button class="flag-btn" data-lang="en">🇬🇧</button>
+      <button class="flag-btn" data-lang="es">🇪🇸</button>
+    </div>
+
+    <!-- Cat Colors -->
+    <h2 id="cats-title">MES CHATS</h2>
+    <div class="colors" id="color-row"></div>
+
+    <!-- Preview -->
+    <div class="preview">
+      <img id="cat-preview" src="" alt="preview" />
+    </div>
+    <div class="trait" id="trait-text"></div>
+
+    <!-- Name -->
+    <div class="name-row">
+      <label id="name-label">Nom :</label>
+      <input type="text" id="name-input" />
+    </div>
+
+    <!-- Size -->
+    <h2 id="size-title">TAILLE</h2>
+    <div class="slider-row">
+      <div class="slider-label" id="size-value">x1.0</div>
+      <input type="range" id="size-slider" min="48" max="200" step="4" value="96" />
+    </div>
+
+    <!-- Ollama Model -->
+    <h2 id="model-title">OLLAMA MODEL</h2>
+    <div class="model-row">
+      <select id="model-select">
+        <option>Loading...</option>
+      </select>
+    </div>
+
+    <button class="close-btn" id="close-btn">OK</button>
+  </div>
+
+  <script src="settings.js"></script>
+</body>
+</html>

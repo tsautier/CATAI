@@ -1,0 +1,17 @@
+{
+  "name": "catai-multiplatform",
+  "version": "1.0.0",
+  "description": "CATAI — Virtual desktop pet cats (multiplatform)",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "keywords": [],
+  "author": "wil-pe",
+  "license": "MIT",
+  "type": "commonjs",
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.10.1"
+  }
+}
