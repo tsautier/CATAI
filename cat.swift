@@ -494,9 +494,11 @@ class KeyableWindow: NSWindow {
 class ChatBubbleController {
     var window: NSWindow!
     var border: PixelBorder!
+    var nameLabel: PixelLabel!
     var responseLabel: PixelLabel!
     var inputField: NSTextField!
     var onSend: ((String) -> Void)?
+    var catName: String = ""
     let bubbleW: CGFloat = 300
     var bubbleH: CGFloat = 120
     let px: CGFloat = 3
@@ -504,6 +506,7 @@ class ChatBubbleController {
     let padding: CGFloat = 18
     let inputH: CGFloat = 24
     let gap: CGFloat = 8
+    let nameH: CGFloat = 18
     var textW: CGFloat { bubbleW - 40 }
     var savedInputText = ""
 
@@ -531,7 +534,7 @@ class ChatBubbleController {
         content.subviews.forEach { $0.removeFromSuperview() }
 
         let textH = computeTextHeight(for: responseText)
-        let bodyH = padding + textH + gap + inputH + padding
+        let bodyH = padding + nameH + 4 + textH + gap + inputH + padding
         bubbleH = bodyH + tailH
 
         let oldFrame = window.frame
@@ -549,6 +552,13 @@ class ChatBubbleController {
         let tail = PixelTail()
         tail.frame = NSRect(x: bubbleW / 2 - 12, y: 0, width: 24, height: tailH + 3)
         content.addSubview(tail)
+
+        nameLabel = PixelLabel()
+        nameLabel.text = catName; nameLabel.fontSize = 12
+        nameLabel.alignment = .center; nameLabel.wraps = false
+        nameLabel.textColor = UI_BROWN
+        nameLabel.frame = NSRect(x: 20, y: tailH + padding + inputH + gap + textH + 4, width: textW, height: nameH)
+        content.addSubview(nameLabel)
 
         responseLabel = PixelLabel()
         responseLabel.text = responseText; responseLabel.fontSize = 11
@@ -685,6 +695,7 @@ class CatInstance {
         window.contentView?.addSubview(imageView)
 
         chatBubble = ChatBubbleController()
+        chatBubble!.catName = config.name
         chatBubble!.setup()
         chatBubble!.onSend = { [weak self] text in self?.sendChat(text) }
         setupChat(model: model, lang: lang)
@@ -1459,7 +1470,8 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
         guard let idx = catConfigs.firstIndex(where: { $0.colorId == colorId }) else { return }
         catConfigs[idx].name = name; saveConfigs(catConfigs)
         if let inst = catInstances.first(where: { $0.colorDef.id == colorId }) {
-            inst.config.name = name; inst.updateSystemPrompt(lang: L10n.lang)
+            inst.config.name = name; inst.chatBubble?.catName = name
+            inst.updateSystemPrompt(lang: L10n.lang)
         }
     }
 
