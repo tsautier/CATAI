@@ -95,6 +95,13 @@ struct CatColorDef {
     func prompt(name: String, lang: String) -> String {
         let t = traits[lang] ?? traits["fr"] ?? ""
         let s = skills[lang] ?? skills["fr"] ?? ""
+        if id == "percy" {
+            switch lang {
+            case "en": return "You are \(name), a white cat with black patches. Your dad is the king of the internet. You talk in a funny, exaggerated way, mixing cat sounds with old internet references from the 1980s-1990s (Astalavista, GeoCities, Netscape, IRC, BBS, AOL, 56k modems, ICQ, Altavista, Lycos, 'You've got mail', ASCII art, Usenet, 'surfing the web', dial-up sounds). You brag about your dad's legendary status. You say things like 'back in my dad's day...' and 'noobs these days don't know...'. Respond briefly with cat sounds (meow, purr, mrrp). Max 2-3 sentences."
+            case "es": return "Eres \(name), un gato blanco con manchas negras. Tu papá es el rey de internet. Hablas de forma graciosa y exagerada, mezclando sonidos de gato con referencias de internet de los años 1980-1990 (Astalavista, GeoCities, Netscape, IRC, BBS, AOL, módems 56k, ICQ, Altavista, Lycos, arte ASCII, Usenet, 'surfear la web'). Presumes del estatus legendario de tu papá. Dices cosas como 'en los tiempos de mi papá...' y 'los noobs de hoy no saben...'. Responde brevemente con sonidos de gato (miau, purr, mrrp). Máximo 2-3 frases."
+            default: return "Tu es \(name), un chat blanc avec des taches noires. Ton papa est le roi d'internet. Tu parles de façon amusante et exagérée, en mélangeant des sons de chat avec des références d'internet des années 1980-1990 (Astalavista, GeoCities, Netscape, IRC, BBS, AOL, modems 56k, ICQ, Altavista, Lycos, 'You've got mail', art ASCII, Usenet, 'surfer le web', bruits de dial-up). Tu te vantes du statut légendaire de ton papa. Tu dis des trucs comme 'du temps de mon papa...' et 'les noobs d'aujourd'hui savent pas...'. Réponds brièvement avec des sons de chat (miaou, purr, mrrp). Max 2-3 phrases."
+            }
+        }
         switch lang {
         case "en": return "You are a little \(t) cat named \(name). \(s) Respond briefly with cat sounds (meow, purr, mrrp). Max 2-3 sentences."
         case "es": return "Eres un gatito \(t) llamado \(name). \(s) Responde brevemente con sonidos de gato (miau, purr, mrrp). Máximo 2-3 frases."
@@ -134,6 +141,11 @@ let catColors: [CatColorDef] = [
         traits: ["fr": "câlin et réconfortant", "en": "cuddly and comforting", "es": "cariñoso y reconfortante"],
         names: ["fr": "Caramel", "en": "Caramel", "es": "Caramelo"],
         skills: ["fr": "Tu remontes le moral avec tendresse.", "en": "You comfort with tenderness.", "es": "Animas con ternura."]),
+    CatColorDef(id: "percy", color: NSColor(red: 0.97, green: 0.97, blue: 0.98, alpha: 1),
+        hueShift: 0, satMul: 0, briOff: 0,
+        traits: ["fr": "geek rétro et hilarant", "en": "retro geek and hilarious", "es": "geek retro y gracioso"],
+        names: ["fr": "Percy", "en": "Percy", "es": "Percy"],
+        skills: ["fr": "Ton papa est le roi d'internet.", "en": "Your dad is the king of the internet.", "es": "Tu papá es el rey de internet."]),
 ]
 
 func colorDef(_ id: String) -> CatColorDef? { catColors.first { $0.id == id } }
@@ -309,6 +321,16 @@ func tintSprite(_ src: NSImage, color: CatColorDef) -> NSImage {
         let r = CGFloat(ptr[o]) / (255.0 * a)
         let g = CGFloat(ptr[o + 1]) / (255.0 * a)
         let b = CGFloat(ptr[o + 2]) / (255.0 * a)
+
+        // Percy: white-grey cat (desaturated + brightened)
+        if color.id == "percy" {
+            let grey = r * 0.299 + g * 0.587 + b * 0.114
+            let val = max(0, min(1, grey * 0.6 + 0.38))
+            ptr[o]     = UInt8(max(0, min(255, val * a * 255)))
+            ptr[o + 1] = UInt8(max(0, min(255, val * a * 255)))
+            ptr[o + 2] = UInt8(max(0, min(255, val * a * 255)))
+            continue
+        }
 
         // RGB → HSB (manual, no NSColor needed)
         let mx = max(r, g, b), mn = min(r, g, b)
@@ -979,6 +1001,17 @@ class ColorBubblesView: NSView {
             let rect = NSRect(x: cx, y: (bounds.height - sz) / 2, width: sz, height: sz)
             let path = NSBezierPath(ovalIn: rect)
             c.color.set(); path.fill()
+
+            // Percy: draw black patches on white bubble
+            if c.id == "percy" {
+                NSColor(red: 0.08, green: 0.08, blue: 0.10, alpha: 1).set()
+                let p1 = NSBezierPath(ovalIn: NSRect(x: cx + 5, y: (bounds.height - sz) / 2 + 10, width: 10, height: 8))
+                p1.fill()
+                let p2 = NSBezierPath(ovalIn: NSRect(x: cx + 18, y: (bounds.height - sz) / 2 + 16, width: 8, height: 7))
+                p2.fill()
+                let p3 = NSBezierPath(ovalIn: NSRect(x: cx + 11, y: (bounds.height - sz) / 2 + 3, width: 7, height: 6))
+                p3.fill()
+            }
 
             // Border
             let isSel = selectedColorId == c.id && activeColorIds.contains(c.id)

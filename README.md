@@ -10,7 +10,7 @@ Virtual desktop pet cats for macOS — pixel art cats that live on your dock and
 
 - **Dock companion** — Cats walk along your dock with pixel-perfect animations
 - **Window perching** — When dock auto-hides, cats teleport to sit on top of your active window
-- **Multi-cat** — Up to 6 cats with distinct colors and personalities
+- **Multi-cat** — Up to 7 cats with distinct colors and personalities
 - **AI chat** — Click a cat to open a pixel-art chat bubble, powered by [Ollama](https://ollama.ai)
 - **Mouse tracking** — Cats notice your cursor and turn to look at it. Get too close and they'll chase it!
 - **Random meows** — Cats spontaneously say "Miaou~", "Prrr...", "Mrrp!" in cute speech bubbles
@@ -29,6 +29,7 @@ Virtual desktop pet cats for macOS — pixel art cats that live on your dock and
 | 🔘 Grey | Einstein | Wise & scholarly | Science facts |
 | 🟤 Brown | Indiana | Adventurous storyteller | Epic tales |
 | 🟡 Cream | Caramel | Cuddly & comforting | Emotional support |
+| 🐾 Percy | Percy | Retro geek & hilarious | 80s-90s internet references |
 
 ## Animations
 
@@ -112,6 +113,12 @@ Click the 🐱 menu bar icon → Settings:
 
 ## Changelog
 
+### v1.3 — Percy the retro cat (2026-04-10)
+- New 7th cat: **Percy** — white-grey cat with a unique personality
+- Percy's dad is the "king of the internet" — he drops 80s-90s internet references (Astalavista, GeoCities, Netscape, IRC, BBS, AOL, 56k modems, ICQ...)
+- Custom pixel-level desaturation tinting for Percy's white-grey look
+- Custom bicolor bubble in the cat color picker
+
 ### v1.2 — Mouse tracking & code polish (2026-04-08)
 - Cats now look toward your cursor when it's nearby (8 directions!)
 - Cats chase the cursor when it gets close enough
@@ -140,7 +147,7 @@ Click the 🐱 menu bar icon → Settings:
 
 ---
 
-> *Psss... a new cat is coming! Multiplatform port in progress — Windows & Linux soon!* 🐱✨
+> *Multiplatform port in progress (Tauri v2) — Windows & Linux coming soon!* 🐱✨
 
 ## License
 
