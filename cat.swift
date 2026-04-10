@@ -295,6 +295,9 @@ func fixedDockHeight() -> CGFloat {
 
 // MARK: - Asset Loading & Tinting
 
+/// Cache tinted sprites at original resolution — key: "colorId:relativePath"
+var tintCache: [String: NSImage] = [:]
+
 func tintSprite(_ src: NSImage, color: CatColorDef) -> NSImage {
     if color.id == "orange" { return src }
 
@@ -312,27 +315,25 @@ func tintSprite(_ src: NSImage, color: CatColorDef) -> NSImage {
     ctx.draw(cgSrc, in: CGRect(x: 0, y: 0, width: w, height: h))
     guard let ptr = ctx.data?.bindMemory(to: UInt8.self, capacity: w * h * 4) else { return src }
 
+    let isPercy = color.id == "percy"
+
     for i in 0..<(w * h) {
         let o = i * 4
         let a = CGFloat(ptr[o + 3]) / 255.0
         if a < 0.01 { continue }
 
-        // Unpremultiply alpha
         let r = CGFloat(ptr[o]) / (255.0 * a)
         let g = CGFloat(ptr[o + 1]) / (255.0 * a)
         let b = CGFloat(ptr[o + 2]) / (255.0 * a)
 
-        // Percy: white-grey cat (desaturated + brightened)
-        if color.id == "percy" {
+        if isPercy {
             let grey = r * 0.299 + g * 0.587 + b * 0.114
             let val = max(0, min(1, grey * 0.6 + 0.38))
-            ptr[o]     = UInt8(max(0, min(255, val * a * 255)))
-            ptr[o + 1] = UInt8(max(0, min(255, val * a * 255)))
-            ptr[o + 2] = UInt8(max(0, min(255, val * a * 255)))
+            let pv = UInt8(max(0, min(255, val * a * 255)))
+            ptr[o] = pv; ptr[o + 1] = pv; ptr[o + 2] = pv
             continue
         }
 
-        // RGB → HSB (manual, no NSColor needed)
         let mx = max(r, g, b), mn = min(r, g, b)
         let delta = mx - mn
         var hh: CGFloat = 0
@@ -349,7 +350,6 @@ func tintSprite(_ src: NSImage, color: CatColorDef) -> NSImage {
         let ns = max(0, min(1, ss * color.satMul))
         let nb = max(0, min(1, bb + color.briOff))
 
-        // HSB → RGB
         let c2 = nb * ns
         let x2 = c2 * (1 - abs(fmod(nh * 6, 2) - 1))
         let m2 = nb - c2
@@ -365,7 +365,6 @@ func tintSprite(_ src: NSImage, color: CatColorDef) -> NSImage {
         }
         nr += m2; ng += m2; nbb += m2
 
-        // Premultiply and write back
         ptr[o]     = UInt8(max(0, min(255, nr * a * 255)))
         ptr[o + 1] = UInt8(max(0, min(255, ng * a * 255)))
         ptr[o + 2] = UInt8(max(0, min(255, nbb * a * 255)))
@@ -382,7 +381,15 @@ func loadTintAndScale(path: String, to size: NSSize, color: CatColorDef) -> NSIm
             NSColor.magenta.withAlphaComponent(0.5).set(); NSBezierPath(rect: r).fill(); return true
         }
     }
-    let tinted = tintSprite(source, color: color)
+    // Use cached tinted sprite at original resolution, only scale to target size
+    let cacheKey = "\(color.id):\(path)"
+    let tinted: NSImage
+    if let cached = tintCache[cacheKey] {
+        tinted = cached
+    } else {
+        tinted = tintSprite(source, color: color)
+        tintCache[cacheKey] = tinted
+    }
     return NSImage(size: size, flipped: false) { rect in
         NSGraphicsContext.current?.imageInterpolation = .none
         tinted.draw(in: rect); return true
@@ -641,6 +648,9 @@ class CatInstance {
     var direction = "south"
     var frameIndex = 0
     var idleTicks = 0
+    private var lastRenderedState: CatState = .idle
+    private var lastRenderedDir = "south"
+    private var lastRenderedFrame = 0
 
     var x: CGFloat = 0
     var y: CGFloat = 0
@@ -796,22 +806,25 @@ class CatInstance {
                 else { frameIndex += 1 }
             }
         }
-        imageView.image = currentImage()
+        // Only update image when state, direction, or frame changed
+        if state != lastRenderedState || direction != lastRenderedDir || frameIndex != lastRenderedFrame {
+            imageView.image = currentImage()
+            lastRenderedState = state; lastRenderedDir = direction; lastRenderedFrame = frameIndex
+        }
     }
 
-    func mouseDistanceAndDirection() -> (dist: CGFloat, dir: String) {
-        let mouse = NSEvent.mouseLocation
+    func mouseDistanceAndDirection(mouse: NSPoint) -> (dist: CGFloat, dir: String) {
         let cx = x + displayW / 2, cy = y + displayH / 2
         let dx = mouse.x - cx, dy = mouse.y - cy
         return (hypot(dx, dy), directionFromAngle(atan2(dy, dx) * 180.0 / .pi))
     }
 
-    func behaviorTick(screenW: CGFloat) {
+    func behaviorTick(screenW: CGFloat, mouse: NSPoint) {
         guard posMode != .hidden else { return }
         if chatBubble?.isVisible == true { return }
 
         // Mouse awareness — check cursor proximity
-        let (mouseDist, mouseDir) = mouseDistanceAndDirection()
+        let (mouseDist, mouseDir) = mouseDistanceAndDirection(mouse: mouse)
 
         if state == .idle || state == .looking {
             // Look at cursor if nearby
@@ -1406,7 +1419,9 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
 
         // Mouse events
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) {
-            [weak self] _ in self?.checkMouseForDock()
+            [weak self] _ in
+            guard let s = self, s.autoHide else { return }
+            s.checkMouseForDock()
         }
         localMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp, .rightMouseDown]
@@ -1417,7 +1432,10 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
             Timer.scheduledTimer(withTimeInterval: RENDER_FPS, repeats: true) { [weak self] _ in self?.renderTick() },
             Timer.scheduledTimer(withTimeInterval: BEHAVIOR_SEC, repeats: true) { [weak self] _ in self?.behaviorTick() },
             Timer.scheduledTimer(withTimeInterval: DOCK_POLL_SEC, repeats: true) { [weak self] _ in self?.pollDock() },
-            Timer.scheduledTimer(withTimeInterval: MOUSE_POLL_SEC, repeats: true) { [weak self] _ in self?.checkMouseForDock() },
+            Timer.scheduledTimer(withTimeInterval: MOUSE_POLL_SEC, repeats: true) { [weak self] _ in
+                guard let s = self, s.autoHide else { return }
+                s.checkMouseForDock()
+            },
             Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.trackWindows() },
         ]
     }
@@ -1681,7 +1699,10 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
     // MARK: Ticks
 
     func renderTick() { for cat in catInstances { cat.renderTick(screenW: screenW) } }
-    func behaviorTick() { for cat in catInstances { cat.behaviorTick(screenW: screenW) } }
+    func behaviorTick() {
+        let mouse = NSEvent.mouseLocation
+        for cat in catInstances { cat.behaviorTick(screenW: screenW, mouse: mouse) }
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         timers.forEach { $0.invalidate() }
