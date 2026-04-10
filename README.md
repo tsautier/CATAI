@@ -149,6 +149,10 @@ Click the 🐱 menu bar icon → Settings:
 
 > *Multiplatform port in progress (Tauri v2) — Windows & Linux coming soon!* 🐱✨
 
+## Thanks
+
+A huge thank you to [Korben.info](https://korben.info) for the mention!
+
 ## License
 
 MIT
