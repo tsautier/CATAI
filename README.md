@@ -118,6 +118,8 @@ Click the 🐱 menu bar icon → Settings:
 - Percy's dad is the "king of the internet" — he drops 80s-90s internet references (Astalavista, GeoCities, Netscape, IRC, BBS, AOL, 56k modems, ICQ...)
 - Custom pixel-level desaturation tinting for Percy's white-grey look
 - Custom bicolor bubble in the cat color picker
+- Cat name displayed in chat bubble
+- **Performance:** Sprite tint cache, conditional image updates, shared mouse polling, reduced dock polling
 
 ### v1.2 — Mouse tracking & code polish (2026-04-08)
 - Cats now look toward your cursor when it's nearby (8 directions!)
