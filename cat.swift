@@ -19,6 +19,7 @@ let CATS_KEY = "catConfigs"
 let SCALE_KEY = "catScale"
 let MODEL_KEY = "ollamaModel"
 let LANG_KEY = "catLang"
+let DEBATE_KEY = "debateEnabled"
 let OLLAMA_URL = "http://localhost:11434"
 let DEFAULT_SCALE: CGFloat = 1.0
 let MIN_SCALE: CGFloat = 0.5
@@ -67,6 +68,15 @@ struct L10n {
         "no_ollama": ["fr": "(Ollama indisponible)", "en": "(Ollama unavailable)", "es": "(Ollama no disponible)"],
         "err": ["fr": "Mrrp... pas de connexion 😿", "en": "Mrrp... no connection 😿", "es": "Mrrp... sin conexión 😿"],
         "lang_label": ["fr": "LANGUE", "en": "LANGUAGE", "es": "IDIOMA"],
+        "debate": ["fr": "MODE DÉBAT", "en": "DEBATE MODE", "es": "MODO DEBATE"],
+        "debate_on": ["fr": "Activé", "en": "Enabled", "es": "Activado"],
+        "debate_off": ["fr": "Désactivé", "en": "Disabled", "es": "Desactivado"],
+        "debate_topic": ["fr": "Sujet du débat...", "en": "Debate topic...", "es": "Tema del debate..."],
+        "debate_start": ["fr": "🎤 Débattre !", "en": "🎤 Debate!", "es": "🎤 ¡Debatir!"],
+        "debate_round": ["fr": "Tour", "en": "Round", "es": "Ronda"],
+        "debate_summary": ["fr": "✨ Synthèse", "en": "✨ Summary", "es": "✨ Síntesis"],
+        "debate_thinking": ["fr": "réfléchit...", "en": "is thinking...", "es": "está pensando..."],
+        "debate_title": ["fr": "~ Débat des Chats ~", "en": "~ Cat Debate ~", "es": "~ Debate de Gatos ~"],
     ]
 
     static let meows: [String: [String]] = [
@@ -274,6 +284,282 @@ class StreamDelegate: NSObject, URLSessionDataDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         if let error = error, (error as NSError).code != NSURLErrorCancelled { onError?(error) }
         onComplete()
+    }
+}
+
+// MARK: - Debate (non-streaming single-shot for debate turns)
+
+func ollamaSingleShot(model: String, messages: [[String: String]],
+                      completion: @escaping (String?) -> Void) {
+    guard let url = URL(string: "\(OLLAMA_URL)/api/chat") else { completion(nil); return }
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.timeoutInterval = 60
+    let body: [String: Any] = ["model": model, "messages": messages, "stream": false]
+    request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+    URLSession.shared.dataTask(with: request) { data, _, error in
+        guard let data = data, error == nil,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let msg = json["message"] as? [String: Any],
+              let content = msg["content"] as? String
+        else { DispatchQueue.main.async { completion(nil) }; return }
+        DispatchQueue.main.async { completion(content) }
+    }.resume()
+}
+
+class CatDebateController {
+    var window: NSWindow!
+    var scrollView: NSScrollView!
+    var textView: NSTextView!
+    var topicField: NSTextField!
+    var startButton: NSButton!
+    var isDebating = false
+
+    struct Participant {
+        let name: String
+        let colorDef: CatColorDef
+        let model: String
+    }
+    var participants: [Participant] = []
+    var debateRounds = 3
+
+    func setup(participants: [Participant]) {
+        self.participants = participants
+        let W: CGFloat = 480, H: CGFloat = 520
+
+        if window == nil {
+            let screenFrame = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+            window = NSWindow(
+                contentRect: NSRect(x: (screenFrame.width - W) / 2,
+                                    y: (screenFrame.height - H) / 2, width: W, height: H),
+                styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            window.title = L10n.s("debate_title")
+            window.level = .floating; window.isReleasedWhenClosed = false
+            window.backgroundColor = UI_CREAM
+            window.minSize = NSSize(width: 400, height: 400)
+        }
+
+        let content = window.contentView!
+        content.subviews.forEach { $0.removeFromSuperview() }
+
+        // Pixel border
+        let border = PixelBorder()
+        border.frame = NSRect(x: 8, y: 8, width: W - 16, height: H - 16)
+        border.autoresizingMask = [.width, .height]
+        content.addSubview(border)
+
+        // Title
+        let title = PixelLabel()
+        title.text = L10n.s("debate_title"); title.fontSize = 14
+        title.frame = NSRect(x: 20, y: H - 42, width: W - 40, height: 24)
+        title.autoresizingMask = [.width, .minYMargin]
+        content.addSubview(title)
+
+        // Participant names
+        let names = participants.map { $0.name }.joined(separator: " vs ")
+        let namesLabel = PixelLabel()
+        namesLabel.text = names; namesLabel.fontSize = 10
+        namesLabel.textColor = NSColor(red: 0.5, green: 0.3, blue: 0.1, alpha: 1)
+        namesLabel.frame = NSRect(x: 20, y: H - 62, width: W - 40, height: 16)
+        namesLabel.autoresizingMask = [.width, .minYMargin]
+        content.addSubview(namesLabel)
+
+        // Topic input
+        topicField = NSTextField(frame: NSRect(x: 20, y: H - 94, width: W - 120, height: 26))
+        topicField.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        topicField.placeholderString = L10n.s("debate_topic")
+        topicField.bezelStyle = .squareBezel
+        topicField.backgroundColor = UI_INPUT; topicField.textColor = UI_BROWN
+        topicField.focusRingType = .none
+        topicField.autoresizingMask = [.width, .minYMargin]
+        content.addSubview(topicField)
+
+        // Start button
+        startButton = NSButton(frame: NSRect(x: W - 95, y: H - 94, width: 75, height: 26))
+        startButton.title = L10n.s("debate_start")
+        startButton.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .bold)
+        startButton.bezelStyle = .rounded
+        startButton.target = self; startButton.action = #selector(startDebate(_:))
+        startButton.autoresizingMask = [.minXMargin, .minYMargin]
+        content.addSubview(startButton)
+
+        // Scroll view with text output
+        scrollView = NSScrollView(frame: NSRect(x: 20, y: 20, width: W - 40, height: H - 126))
+        scrollView.hasVerticalScroller = true; scrollView.borderType = .bezelBorder
+        scrollView.autoresizingMask = [.width, .height]
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = NSColor(red: 1, green: 0.99, blue: 0.96, alpha: 1)
+
+        textView = NSTextView(frame: NSRect(x: 0, y: 0, width: W - 56, height: 0))
+        textView.isEditable = false; textView.isSelectable = true
+        textView.drawsBackground = false
+        textView.textContainerInset = NSSize(width: 8, height: 8)
+        textView.textContainer?.widthTracksTextView = true
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        scrollView.documentView = textView
+        content.addSubview(scrollView)
+    }
+
+    func show() {
+        window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func startDebate(_ sender: Any?) {
+        let topic = topicField.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !topic.isEmpty, !isDebating, participants.count >= 2 else { return }
+        isDebating = true
+        startButton.isEnabled = false
+        topicField.isEnabled = false
+        textView.string = ""
+
+        appendStyled("🎤 ", bold: true, color: UI_BROWN)
+        appendStyled(topic + "\n\n", bold: true, color: UI_BROWN)
+
+        runDebate(topic: topic)
+    }
+
+    func runDebate(topic: String) {
+        // Build per-participant message histories with debate system prompts
+        var histories: [[String: Any]] = participants.map { p in
+            let debatePrompt: String
+            switch L10n.lang {
+            case "en":
+                debatePrompt = "You are \(p.name), a cat debating with other cats. Stay in character as a \(p.colorDef.traits["en"] ?? "") cat. Give your opinion on the topic. Be concise (2-3 sentences max). React to what others said if applicable. Use cat sounds."
+            case "es":
+                debatePrompt = "Eres \(p.name), un gato debatiendo con otros gatos. Mantén tu personaje de gato \(p.colorDef.traits["es"] ?? ""). Da tu opinión sobre el tema. Sé conciso (2-3 frases máx). Reacciona a lo que dijeron los demás si aplica. Usa sonidos de gato."
+            default:
+                debatePrompt = "Tu es \(p.name), un chat qui débat avec d'autres chats. Reste dans ton personnage de chat \(p.colorDef.traits["fr"] ?? ""). Donne ton avis sur le sujet. Sois concis (2-3 phrases max). Réagis à ce que les autres ont dit si applicable. Utilise des sons de chat."
+            }
+            return [
+                "model": p.model,
+                "messages": [["role": "system", "content": debatePrompt]] as [[String: String]]
+            ]
+        }
+
+        // Run rounds sequentially
+        var round = 0
+        var allResponses: [(name: String, text: String)] = []
+
+        func nextRound() {
+            guard round < debateRounds else {
+                // Final synthesis by first cat
+                self.appendStyled("\n━━━ \(L10n.s("debate_summary")) ━━━\n", bold: true, color: UI_GOLD)
+                let summaryPrompt: String
+                switch L10n.lang {
+                case "en": summaryPrompt = "Summarize the debate in 2-3 sentences. What was the consensus? Use cat sounds."
+                case "es": summaryPrompt = "Resume el debate en 2-3 frases. ¿Cuál fue el consenso? Usa sonidos de gato."
+                default: summaryPrompt = "Résume le débat en 2-3 phrases. Quel était le consensus ? Utilise des sons de chat."
+                }
+                var msgs = (histories[0]["messages"] as? [[String: String]]) ?? []
+                msgs.append(["role": "user", "content": summaryPrompt])
+                let p = self.participants[0]
+                self.appendStyled("  \(p.name) \(L10n.s("debate_thinking"))\n", bold: false, color: .gray)
+                ollamaSingleShot(model: p.model, messages: msgs) { [weak self] response in
+                    guard let self = self else { return }
+                    self.replaceLast(with: "")
+                    if let r = response {
+                        self.appendStyled("🐱 \(p.name): ", bold: true, color: self.colorForParticipant(0))
+                        self.appendStyled(r + "\n", bold: false, color: UI_BROWN)
+                    }
+                    self.appendStyled("\n🏁\n", bold: true, color: UI_BROWN)
+                    self.isDebating = false
+                    self.startButton.isEnabled = true
+                    self.topicField.isEnabled = true
+                }
+                return
+            }
+
+            round += 1
+            self.appendStyled("━━━ \(L10n.s("debate_round")) \(round) ━━━\n", bold: true, color: UI_BROWN)
+
+            var catIdx = 0
+            func nextCat() {
+                guard catIdx < self.participants.count else {
+                    // End of round
+                    self.appendStyled("\n", bold: false, color: UI_BROWN)
+                    nextRound()
+                    return
+                }
+
+                let p = self.participants[catIdx]
+                let ci = catIdx
+                var msgs = (histories[ci]["messages"] as? [[String: String]]) ?? []
+
+                // Build the user prompt for this turn
+                let userMsg: String
+                if round == 1 && catIdx == 0 {
+                    // First cat, first round: introduce topic
+                    userMsg = topic
+                } else {
+                    // Include what others said this round
+                    let roundStart = allResponses.count - catIdx
+                    let context = allResponses.suffix(from: max(0, roundStart))
+                        .map { "\($0.name): \($0.text)" }
+                        .joined(separator: "\n")
+                    if context.isEmpty {
+                        userMsg = topic
+                    } else {
+                        let prefix: String
+                        switch L10n.lang {
+                        case "en": prefix = "Topic: \(topic)\nHere's what the others said:\n"
+                        case "es": prefix = "Tema: \(topic)\nEsto es lo que dijeron los demás:\n"
+                        default: prefix = "Sujet: \(topic)\nVoici ce que les autres ont dit :\n"
+                        }
+                        userMsg = prefix + context
+                    }
+                }
+                msgs.append(["role": "user", "content": userMsg])
+
+                self.appendStyled("  \(p.name) \(L10n.s("debate_thinking"))\n", bold: false, color: .gray)
+
+                ollamaSingleShot(model: p.model, messages: msgs) { [weak self] response in
+                    guard let self = self else { return }
+                    self.replaceLast(with: "")
+                    if let r = response {
+                        // Update history for this participant
+                        msgs.append(["role": "assistant", "content": r])
+                        histories[ci]["messages"] = msgs
+                        allResponses.append((name: p.name, text: r))
+
+                        self.appendStyled("🐱 \(p.name): ", bold: true, color: self.colorForParticipant(ci))
+                        self.appendStyled(r + "\n", bold: false, color: UI_BROWN)
+                    } else {
+                        self.appendStyled("🐱 \(p.name): ", bold: true, color: self.colorForParticipant(ci))
+                        self.appendStyled("*\(L10n.s("err"))*\n", bold: false, color: .red)
+                    }
+                    catIdx += 1
+                    nextCat()
+                }
+            }
+            nextCat()
+        }
+        nextRound()
+    }
+
+    func colorForParticipant(_ index: Int) -> NSColor {
+        guard index < participants.count else { return UI_BROWN }
+        return participants[index].colorDef.color
+    }
+
+    func appendStyled(_ text: String, bold: Bool, color: NSColor) {
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: 11, weight: bold ? .bold : .regular),
+            .foregroundColor: color
+        ]
+        textView.textStorage?.append(NSAttributedString(string: text, attributes: attrs))
+        textView.scrollToEndOfDocument(nil)
+    }
+
+    func replaceLast(with text: String) {
+        guard let storage = textView.textStorage else { return }
+        let str = storage.string
+        if let lastNewline = str.dropLast().lastIndex(of: "\n") {
+            let start = str.distance(from: str.startIndex, to: lastNewline) + 1
+            let range = NSRange(location: start, length: storage.length - start)
+            storage.replaceCharacters(in: range, with: text)
+        }
     }
 }
 
@@ -504,8 +790,11 @@ class ChatBubbleController {
     var nameLabel: PixelLabel!
     var responseLabel: PixelLabel!
     var inputField: NSTextField!
+    var debateButton: NSButton?
     var onSend: ((String) -> Void)?
+    var onDebate: ((String) -> Void)?
     var catName: String = ""
+    var debateEnabled = false
     let bubbleW: CGFloat = 300
     var bubbleH: CGFloat = 120
     let px: CGFloat = 3
@@ -514,6 +803,7 @@ class ChatBubbleController {
     let inputH: CGFloat = 24
     let gap: CGFloat = 8
     let nameH: CGFloat = 18
+    let debateBtnH: CGFloat = 22
     var textW: CGFloat { bubbleW - 40 }
     var savedInputText = ""
 
@@ -541,7 +831,8 @@ class ChatBubbleController {
         content.subviews.forEach { $0.removeFromSuperview() }
 
         let textH = computeTextHeight(for: responseText)
-        let bodyH = padding + nameH + 4 + textH + gap + inputH + padding
+        let extraH: CGFloat = debateEnabled ? debateBtnH + 4 : 0
+        let bodyH = padding + nameH + 4 + textH + gap + inputH + extraH + padding
         bubbleH = bodyH + tailH
 
         let oldFrame = window.frame
@@ -573,7 +864,8 @@ class ChatBubbleController {
         responseLabel.frame = NSRect(x: 20, y: tailH + padding + inputH + gap, width: textW, height: textH)
         content.addSubview(responseLabel)
 
-        inputField = NSTextField(frame: NSRect(x: 20, y: tailH + padding, width: textW, height: inputH))
+        let inputY = tailH + padding + (debateEnabled ? debateBtnH + 4 : 0)
+        inputField = NSTextField(frame: NSRect(x: 20, y: inputY, width: textW, height: inputH))
         inputField.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
         inputField.placeholderString = L10n.s("talk")
         inputField.isBordered = true; inputField.bezelStyle = .squareBezel
@@ -583,12 +875,28 @@ class ChatBubbleController {
         inputField.target = self; inputField.action = #selector(inputSubmitted(_:))
         inputField.stringValue = savedInputText
         content.addSubview(inputField)
+
+        if debateEnabled {
+            let btn = NSButton(frame: NSRect(x: 20, y: tailH + padding, width: textW, height: debateBtnH))
+            btn.title = L10n.s("debate_start")
+            btn.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .bold)
+            btn.bezelStyle = .rounded
+            btn.target = self; btn.action = #selector(debateClicked(_:))
+            content.addSubview(btn)
+            debateButton = btn
+        }
     }
 
     @objc func inputSubmitted(_ sender: NSTextField) {
         let text = sender.stringValue.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty else { return }
         sender.stringValue = ""; onSend?(text)
+    }
+
+    @objc func debateClicked(_ sender: Any?) {
+        let text = inputField.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return }
+        inputField.stringValue = ""; onDebate?(text)
     }
 
     func show(aboveCatAt catFrame: NSRect) {
@@ -598,6 +906,13 @@ class ChatBubbleController {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         window.makeFirstResponder(inputField)
+    }
+
+    /// Reposition only — no focus steal, used during cat movement
+    func reposition(aboveCatAt catFrame: NSRect) {
+        let bx = catFrame.midX - bubbleW / 2
+        let by = catFrame.maxY + 4
+        window.setFrameOrigin(NSPoint(x: bx, y: by))
     }
 
     func hide() { window.orderOut(nil) }
@@ -675,6 +990,7 @@ class CatInstance {
 
     var chatBubble: ChatBubbleController?
     var ollamaChat: OllamaChat!
+    var onDebateRequested: ((CatInstance, String) -> Void)?
 
     // Mini speech bubble for random meows
     var meowWindow: NSWindow?
@@ -708,6 +1024,10 @@ class CatInstance {
         chatBubble!.catName = config.name
         chatBubble!.setup()
         chatBubble!.onSend = { [weak self] text in self?.sendChat(text) }
+        chatBubble!.onDebate = { [weak self] topic in
+            guard let s = self else { return }
+            s.onDebateRequested?(s, topic)
+        }
         setupChat(model: model, lang: lang)
     }
 
@@ -765,7 +1085,7 @@ class CatInstance {
             x = max(wb.minX, min(x, wb.maxX - displayW))
         }
         window.setFrameOrigin(NSPoint(x: x, y: y))
-        if let b = chatBubble, b.isVisible { b.show(aboveCatAt: window.frame) }
+        if let b = chatBubble, b.isVisible { b.reposition(aboveCatAt: window.frame) }
         if let mw = meowWindow, mw.isVisible {
             let bw = mw.frame.width
             mw.setFrameOrigin(NSPoint(x: window.frame.midX - bw / 2, y: window.frame.maxY + 4))
@@ -1141,20 +1461,22 @@ class SettingsWindowController {
     var onScaleChanged: ((CGFloat) -> Void)?
     var onModelChanged: ((String) -> Void)?
     var onLangChanged: ((String) -> Void)?
+    var onDebateToggled: ((Bool) -> Void)?
     var getConfigs: (() -> [CatConfig])?
     var getPreview: ((String) -> NSImage?)?
 
     var currentScale: CGFloat = 1.0
     var currentModel = ""
+    var debateEnabled = false
     var selectedColorId: String?
     var sizeLabel: PixelLabel?
     var scaleTimer: Timer?
 
     let W: CGFloat = 320
-    let H: CGFloat = 560
+    let H: CGFloat = 620
 
-    func setup(scale: CGFloat, model: String) {
-        currentScale = scale; currentModel = model
+    func setup(scale: CGFloat, model: String, debate: Bool = false) {
+        currentScale = scale; currentModel = model; debateEnabled = debate
         if window == nil {
             let screenFrame = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
             window = NSWindow(
@@ -1266,16 +1588,16 @@ class SettingsWindowController {
         // Size section
         let sizeTitle = PixelLabel()
         sizeTitle.text = L10n.s("size"); sizeTitle.fontSize = 12
-        sizeTitle.frame = NSRect(x: 20, y: 168, width: W - 40, height: 20)
+        sizeTitle.frame = NSRect(x: 20, y: 228, width: W - 40, height: 20)
         content.addSubview(sizeTitle)
 
         sizeLabel = PixelLabel()
         sizeLabel!.fontSize = 11; sizeLabel!.text = String(format: "x%.1f", currentScale)
-        sizeLabel!.frame = NSRect(x: 20, y: 150, width: W - 40, height: 18)
+        sizeLabel!.frame = NSRect(x: 20, y: 210, width: W - 40, height: 18)
         content.addSubview(sizeLabel!)
 
         let slider = PixelSlider()
-        slider.frame = NSRect(x: 24, y: 118, width: W - 48, height: 28)
+        slider.frame = NSRect(x: 24, y: 178, width: W - 48, height: 28)
         slider.minValue = MIN_SCALE; slider.maxValue = MAX_SCALE; slider.value = currentScale
         slider.onChange = { [weak self] v in
             self?.sizeLabel?.text = String(format: "x%.1f", v)
@@ -1290,10 +1612,10 @@ class SettingsWindowController {
         // Model section
         let modelTitle = PixelLabel()
         modelTitle.text = L10n.s("model"); modelTitle.fontSize = 12
-        modelTitle.frame = NSRect(x: 20, y: 82, width: W - 40, height: 20)
+        modelTitle.frame = NSRect(x: 20, y: 140, width: W - 40, height: 20)
         content.addSubview(modelTitle)
 
-        let popup = NSPopUpButton(frame: NSRect(x: 24, y: 45, width: W - 48, height: 28), pullsDown: false)
+        let popup = NSPopUpButton(frame: NSRect(x: 24, y: 105, width: W - 48, height: 28), pullsDown: false)
         popup.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
         popup.target = self; popup.action = #selector(modelSelected(_:))
         content.addSubview(popup)
@@ -1310,6 +1632,28 @@ class SettingsWindowController {
                 }
             }
         }
+
+        // Debate toggle
+        let debateTitle = PixelLabel()
+        debateTitle.text = L10n.s("debate"); debateTitle.fontSize = 12
+        debateTitle.frame = NSRect(x: 20, y: 72, width: W - 40, height: 20)
+        content.addSubview(debateTitle)
+
+        let debateStatus = PixelLabel()
+        debateStatus.text = debateEnabled ? L10n.s("debate_on") : L10n.s("debate_off")
+        debateStatus.fontSize = 10
+        debateStatus.textColor = debateEnabled
+            ? NSColor(red: 0.2, green: 0.6, blue: 0.2, alpha: 1)
+            : NSColor(red: 0.6, green: 0.4, blue: 0.2, alpha: 1)
+        debateStatus.frame = NSRect(x: 20, y: 52, width: W / 2 - 20, height: 18)
+        content.addSubview(debateStatus)
+
+        let toggle = NSButton(frame: NSRect(x: W / 2, y: 50, width: W / 2 - 24, height: 22))
+        toggle.setButtonType(.switch)
+        toggle.title = ""
+        toggle.state = debateEnabled ? .on : .off
+        toggle.target = self; toggle.action = #selector(debateToggled(_:))
+        content.addSubview(toggle)
     }
 
     @objc func nameEdited(_ sender: NSTextField) {
@@ -1320,6 +1664,12 @@ class SettingsWindowController {
     @objc func modelSelected(_ sender: NSPopUpButton) {
         guard let t = sender.selectedItem?.title, !t.hasPrefix("(") else { return }
         currentModel = t; onModelChanged?(t)
+    }
+
+    @objc func debateToggled(_ sender: NSButton) {
+        debateEnabled = sender.state == .on
+        onDebateToggled?(debateEnabled)
+        buildContent()
     }
 
     func show() {
@@ -1351,6 +1701,8 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
 
     var statusItem: NSStatusItem!
     var settingsCtrl: SettingsWindowController?
+    var debateCtrl: CatDebateController?
+    var debateEnabled = false
     var localMonitor: Any?
     var globalMonitor: Any?
     var activeDragCat: CatInstance?
@@ -1389,6 +1741,7 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
         if s > 0 { catScale = CGFloat(s) }
         selectedModel = UserDefaults.standard.string(forKey: MODEL_KEY) ?? "gemma4:latest"
         L10n.lang = UserDefaults.standard.string(forKey: LANG_KEY) ?? "fr"
+        debateEnabled = UserDefaults.standard.bool(forKey: DEBATE_KEY)
 
         recomputeSize()
 
@@ -1449,6 +1802,8 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
         inst.setup(meta: meta, catDir: catDir, dw: displayW, dh: displayH,
                    model: selectedModel, lang: L10n.lang,
                    startX: max(0, min(startX, screenW - displayW)), startY: dockHeight)
+        inst.chatBubble?.debateEnabled = debateEnabled
+        inst.onDebateRequested = { [weak self] cat, topic in self?.startDebate(from: cat, topic: topic) }
         catInstances.append(inst)
     }
 
@@ -1521,6 +1876,32 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
         for cat in catInstances { cat.ollamaChat.model = model }
     }
 
+    func setDebateEnabled(_ enabled: Bool) {
+        debateEnabled = enabled; UserDefaults.standard.set(enabled, forKey: DEBATE_KEY)
+        for cat in catInstances { cat.chatBubble?.debateEnabled = enabled }
+    }
+
+    func startDebate(from initiator: CatInstance, topic: String) {
+        guard catInstances.count >= 2 else { return }
+        // Close all chat bubbles
+        for cat in catInstances { cat.chatBubble?.hide() }
+
+        // Build participants from all active cats
+        let participants = catInstances.map { cat in
+            CatDebateController.Participant(
+                name: cat.config.name,
+                colorDef: cat.colorDef,
+                model: cat.ollamaChat.model
+            )
+        }
+
+        if debateCtrl == nil { debateCtrl = CatDebateController() }
+        debateCtrl!.setup(participants: participants)
+        debateCtrl!.show()
+        debateCtrl!.topicField.stringValue = topic
+        debateCtrl!.startDebate(nil)
+    }
+
     // MARK: Status Bar
 
     func setupStatusItem() {
@@ -1557,7 +1938,8 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
         ctrl.onScaleChanged = { [weak self] v in self?.applyNewScale(v) }
         ctrl.onModelChanged = { [weak self] m in self?.setModel(m) }
         ctrl.onLangChanged = { [weak self] l in self?.setLanguage(l) }
-        ctrl.setup(scale: catScale, model: selectedModel)
+        ctrl.onDebateToggled = { [weak self] enabled in self?.setDebateEnabled(enabled) }
+        ctrl.setup(scale: catScale, model: selectedModel, debate: debateEnabled)
         ctrl.show()
     }
 

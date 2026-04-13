@@ -1,6 +1,6 @@
 # CATAI
 
-Virtual desktop pet cats for macOS — pixel art cats that live on your dock and chat with you via Ollama LLM.
+Virtual desktop pet cats for macOS — pixel art cats that live on your dock, chat with you via Ollama LLM, and debate ideas together to help you brainstorm and refine your thoughts.
 
 ![Swift](https://img.shields.io/badge/Swift-native-orange) ![macOS](https://img.shields.io/badge/macOS-14%2B-blue) ![Ollama](https://img.shields.io/badge/Ollama-LLM-green)
 
@@ -12,6 +12,7 @@ Virtual desktop pet cats for macOS — pixel art cats that live on your dock and
 - **Window perching** — When dock auto-hides, cats teleport to sit on top of your active window
 - **Multi-cat** — Up to 7 cats with distinct colors and personalities
 - **AI chat** — Click a cat to open a pixel-art chat bubble, powered by [Ollama](https://ollama.ai)
+- **Cat Debate mode** — Your cats debate any topic together! Each cat argues from its personality, then they synthesize a final answer. A creative brainstorming & idea-refining tool
 - **Mouse tracking** — Cats notice your cursor and turn to look at it. Get too close and they'll chase it!
 - **Random meows** — Cats spontaneously say "Miaou~", "Prrr...", "Mrrp!" in cute speech bubbles
 - **Pixel art UI** — Settings panel, chat bubbles, and controls all in retro pixel style
@@ -83,10 +84,11 @@ Click the 🐱 menu bar icon → Settings:
 - **Name** — Rename each cat
 - **Size** — Pixel art slider to scale cats
 - **Ollama model** — Select from your installed models
+- **Debate mode** — Toggle on/off to enable multi-cat brainstorming
 
 ## How It Works
 
-- Single native Swift file (~1600 lines), no external dependencies
+- Single native Swift file (~2000 lines), no external dependencies
 - `NSWindow` with transparent background for overlay rendering
 - `CGWindowListCopyWindowInfo` for detecting frontmost windows
 - Dock auto-hide detection via mouse position polling at 30 FPS
@@ -112,6 +114,17 @@ Click the 🐱 menu bar icon → Settings:
 ```
 
 ## Changelog
+
+### v2.0 — Cat Debate: brainstorm with your cats (2026-04-13)
+- **Debate mode** — Your cats now debate any topic together in a dedicated window
+  - Each cat argues from its unique personality (philosopher, geek, poet, scientist...)
+  - 3 rounds of discussion where cats react to each other's arguments
+  - Final synthesis/consensus by the moderator cat
+  - Enable/disable via toggle in Settings
+- **Debate button in chat bubble** — When debate mode is on, a "🎤 Débattre !" button appears in each cat's speech bubble
+- **Non-streaming Ollama API** for reliable multi-turn debate exchanges
+- **Fix:** Chat bubble input no longer loses focus when cat is walking
+- CATAI is no longer just a desktop companion — it's now an **idea refinement system** powered by multiple AI personalities
 
 ### v1.3 — Percy the retro cat (2026-04-10)
 - New 7th cat: **Percy** — white-grey cat with a unique personality
