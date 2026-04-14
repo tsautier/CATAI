@@ -287,7 +287,7 @@ class StreamDelegate: NSObject, URLSessionDataDelegate {
     }
 }
 
-// MARK: - Debate (non-streaming single-shot for debate turns)
+// MARK: - Debate Engine (uses each cat's own bubble)
 
 func ollamaSingleShot(model: String, messages: [[String: String]],
                       completion: @escaping (String?) -> Void) {
@@ -308,257 +308,155 @@ func ollamaSingleShot(model: String, messages: [[String: String]],
     }.resume()
 }
 
-class CatDebateController {
-    var window: NSWindow!
-    var scrollView: NSScrollView!
-    var textView: NSTextView!
-    var topicField: NSTextField!
-    var startButton: NSButton!
+/// Orchestrates a multi-cat debate using each cat's own chat bubble
+class DebateEngine {
     var isDebating = false
+    let maxRounds = 4
+    weak var delegate: CatAppDelegate?
 
-    struct Participant {
-        let name: String
-        let colorDef: CatColorDef
-        let model: String
-    }
-    var participants: [Participant] = []
-    var debateRounds = 3
-
-    func setup(participants: [Participant]) {
-        self.participants = participants
-        let W: CGFloat = 480, H: CGFloat = 520
-
-        if window == nil {
-            let screenFrame = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-            window = NSWindow(
-                contentRect: NSRect(x: (screenFrame.width - W) / 2,
-                                    y: (screenFrame.height - H) / 2, width: W, height: H),
-                styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-            window.title = L10n.s("debate_title")
-            window.level = .floating; window.isReleasedWhenClosed = false
-            window.backgroundColor = UI_CREAM
-            window.minSize = NSSize(width: 400, height: 400)
-        }
-
-        let content = window.contentView!
-        content.subviews.forEach { $0.removeFromSuperview() }
-
-        // Pixel border
-        let border = PixelBorder()
-        border.frame = NSRect(x: 8, y: 8, width: W - 16, height: H - 16)
-        border.autoresizingMask = [.width, .height]
-        content.addSubview(border)
-
-        // Title
-        let title = PixelLabel()
-        title.text = L10n.s("debate_title"); title.fontSize = 14
-        title.frame = NSRect(x: 20, y: H - 42, width: W - 40, height: 24)
-        title.autoresizingMask = [.width, .minYMargin]
-        content.addSubview(title)
-
-        // Participant names
-        let names = participants.map { $0.name }.joined(separator: " vs ")
-        let namesLabel = PixelLabel()
-        namesLabel.text = names; namesLabel.fontSize = 10
-        namesLabel.textColor = NSColor(red: 0.5, green: 0.3, blue: 0.1, alpha: 1)
-        namesLabel.frame = NSRect(x: 20, y: H - 62, width: W - 40, height: 16)
-        namesLabel.autoresizingMask = [.width, .minYMargin]
-        content.addSubview(namesLabel)
-
-        // Topic input
-        topicField = NSTextField(frame: NSRect(x: 20, y: H - 94, width: W - 120, height: 26))
-        topicField.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        topicField.placeholderString = L10n.s("debate_topic")
-        topicField.bezelStyle = .squareBezel
-        topicField.backgroundColor = UI_INPUT; topicField.textColor = UI_BROWN
-        topicField.focusRingType = .none
-        topicField.autoresizingMask = [.width, .minYMargin]
-        content.addSubview(topicField)
-
-        // Start button
-        startButton = NSButton(frame: NSRect(x: W - 95, y: H - 94, width: 75, height: 26))
-        startButton.title = L10n.s("debate_start")
-        startButton.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .bold)
-        startButton.bezelStyle = .rounded
-        startButton.target = self; startButton.action = #selector(startDebate(_:))
-        startButton.autoresizingMask = [.minXMargin, .minYMargin]
-        content.addSubview(startButton)
-
-        // Scroll view with text output
-        scrollView = NSScrollView(frame: NSRect(x: 20, y: 20, width: W - 40, height: H - 126))
-        scrollView.hasVerticalScroller = true; scrollView.borderType = .bezelBorder
-        scrollView.autoresizingMask = [.width, .height]
-        scrollView.drawsBackground = true
-        scrollView.backgroundColor = NSColor(red: 1, green: 0.99, blue: 0.96, alpha: 1)
-
-        textView = NSTextView(frame: NSRect(x: 0, y: 0, width: W - 56, height: 0))
-        textView.isEditable = false; textView.isSelectable = true
-        textView.drawsBackground = false
-        textView.textContainerInset = NSSize(width: 8, height: 8)
-        textView.textContainer?.widthTracksTextView = true
-        textView.isVerticallyResizable = true
-        textView.autoresizingMask = [.width]
-        scrollView.documentView = textView
-        content.addSubview(scrollView)
-    }
-
-    func show() {
-        window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
-    }
-
-    @objc func startDebate(_ sender: Any?) {
-        let topic = topicField.stringValue.trimmingCharacters(in: .whitespaces)
-        guard !topic.isEmpty, !isDebating, participants.count >= 2 else { return }
+    func start(topic: String, cats: [CatInstance]) {
+        guard cats.count >= 2, !isDebating else { return }
         isDebating = true
-        startButton.isEnabled = false
-        topicField.isEnabled = false
-        textView.string = ""
 
-        appendStyled("🎤 ", bold: true, color: UI_BROWN)
-        appendStyled(topic + "\n\n", bold: true, color: UI_BROWN)
-
-        runDebate(topic: topic)
-    }
-
-    func runDebate(topic: String) {
-        // Build per-participant message histories with debate system prompts
-        var histories: [[String: Any]] = participants.map { p in
-            let debatePrompt: String
+        // Build per-cat debate histories (separate from normal chat)
+        var debateHistories: [Int: [[String: String]]] = [:]
+        for (i, cat) in cats.enumerated() {
+            let t = cat.colorDef.traits[L10n.lang] ?? cat.colorDef.traits["fr"] ?? ""
+            let prompt: String
             switch L10n.lang {
             case "en":
-                debatePrompt = "You are \(p.name), a cat debating with other cats. Stay in character as a \(p.colorDef.traits["en"] ?? "") cat. Give your opinion on the topic. Be concise (2-3 sentences max). React to what others said if applicable. Use cat sounds."
+                prompt = "You are \(cat.config.name), a \(t) cat debating with other cats. Give your opinion on the topic. Be concise (2-3 sentences max). React to what others said. Use cat sounds (meow, purr, mrrp)."
             case "es":
-                debatePrompt = "Eres \(p.name), un gato debatiendo con otros gatos. Mantén tu personaje de gato \(p.colorDef.traits["es"] ?? ""). Da tu opinión sobre el tema. Sé conciso (2-3 frases máx). Reacciona a lo que dijeron los demás si aplica. Usa sonidos de gato."
+                prompt = "Eres \(cat.config.name), un gato \(t) debatiendo con otros gatos. Da tu opinión sobre el tema. Sé conciso (2-3 frases máx). Reacciona a lo que dijeron los demás. Usa sonidos de gato (miau, purr, mrrp)."
             default:
-                debatePrompt = "Tu es \(p.name), un chat qui débat avec d'autres chats. Reste dans ton personnage de chat \(p.colorDef.traits["fr"] ?? ""). Donne ton avis sur le sujet. Sois concis (2-3 phrases max). Réagis à ce que les autres ont dit si applicable. Utilise des sons de chat."
+                prompt = "Tu es \(cat.config.name), un chat \(t) qui débat avec d'autres chats. Donne ton avis sur le sujet. Sois concis (2-3 phrases max). Réagis à ce que les autres ont dit. Utilise des sons de chat (miaou, purr, mrrp)."
             }
-            return [
-                "model": p.model,
-                "messages": [["role": "system", "content": debatePrompt]] as [[String: String]]
-            ]
+            debateHistories[i] = [["role": "system", "content": prompt]]
         }
 
-        // Run rounds sequentially
-        var round = 0
         var allResponses: [(name: String, text: String)] = []
+        var round = 0
 
-        func nextRound() {
-            guard round < debateRounds else {
-                // Final synthesis by first cat
-                self.appendStyled("\n━━━ \(L10n.s("debate_summary")) ━━━\n", bold: true, color: UI_GOLD)
-                let summaryPrompt: String
-                switch L10n.lang {
-                case "en": summaryPrompt = "Summarize the debate in 2-3 sentences. What was the consensus? Use cat sounds."
-                case "es": summaryPrompt = "Resume el debate en 2-3 frases. ¿Cuál fue el consenso? Usa sonidos de gato."
-                default: summaryPrompt = "Résume le débat en 2-3 phrases. Quel était le consensus ? Utilise des sons de chat."
-                }
-                var msgs = (histories[0]["messages"] as? [[String: String]]) ?? []
-                msgs.append(["role": "user", "content": summaryPrompt])
-                let p = self.participants[0]
-                self.appendStyled("  \(p.name) \(L10n.s("debate_thinking"))\n", bold: false, color: .gray)
-                ollamaSingleShot(model: p.model, messages: msgs) { [weak self] response in
-                    guard let self = self else { return }
-                    self.replaceLast(with: "")
-                    if let r = response {
-                        self.appendStyled("🐱 \(p.name): ", bold: true, color: self.colorForParticipant(0))
-                        self.appendStyled(r + "\n", bold: false, color: UI_BROWN)
-                    }
-                    self.appendStyled("\n🏁\n", bold: true, color: UI_BROWN)
-                    self.isDebating = false
-                    self.startButton.isEnabled = true
-                    self.topicField.isEnabled = true
-                }
+        // Show "thinking" in a cat's bubble
+        func showThinking(_ cat: CatInstance) {
+            cat.chatBubble?.setResponse("\(cat.config.name) \(L10n.s("debate_thinking"))")
+            cat.chatBubble?.show(aboveCatAt: cat.window.frame)
+            cat.state = .eating; cat.frameIndex = 0
+        }
+
+        // Show response in a cat's bubble
+        func showResponse(_ cat: CatInstance, _ text: String) {
+            let roundLabel = "[\(L10n.s("debate_round")) \(round)] "
+            cat.chatBubble?.setResponse(roundLabel + text)
+            cat.chatBubble?.show(aboveCatAt: cat.window.frame)
+            cat.state = .idle; cat.frameIndex = 0; cat.idleTicks = 0
+        }
+
+        func runRound() {
+            guard round < self.maxRounds else {
+                // Final synthesis
+                self.runSynthesis(cats: cats, histories: &debateHistories,
+                                  allResponses: allResponses, topic: topic)
                 return
             }
-
             round += 1
-            self.appendStyled("━━━ \(L10n.s("debate_round")) \(round) ━━━\n", bold: true, color: UI_BROWN)
 
             var catIdx = 0
             func nextCat() {
-                guard catIdx < self.participants.count else {
-                    // End of round
-                    self.appendStyled("\n", bold: false, color: UI_BROWN)
-                    nextRound()
+                guard catIdx < cats.count else {
+                    // Small delay before next round
+                    Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { _ in
+                        // Hide all bubbles before next round
+                        for cat in cats { cat.chatBubble?.hide() }
+                        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { _ in
+                            runRound()
+                        }
+                    }
                     return
                 }
 
-                let p = self.participants[catIdx]
+                let cat = cats[catIdx]
                 let ci = catIdx
-                var msgs = (histories[ci]["messages"] as? [[String: String]]) ?? []
+                var msgs = debateHistories[ci] ?? []
 
-                // Build the user prompt for this turn
+                // Build context: topic + what others said
                 let userMsg: String
                 if round == 1 && catIdx == 0 {
-                    // First cat, first round: introduce topic
                     userMsg = topic
                 } else {
-                    // Include what others said this round
-                    let roundStart = allResponses.count - catIdx
-                    let context = allResponses.suffix(from: max(0, roundStart))
+                    // Last N responses from other cats
+                    let recentCount = min(allResponses.count, cats.count)
+                    let recent = allResponses.suffix(recentCount)
                         .map { "\($0.name): \($0.text)" }
                         .joined(separator: "\n")
-                    if context.isEmpty {
+                    if recent.isEmpty {
                         userMsg = topic
                     } else {
-                        let prefix: String
                         switch L10n.lang {
-                        case "en": prefix = "Topic: \(topic)\nHere's what the others said:\n"
-                        case "es": prefix = "Tema: \(topic)\nEsto es lo que dijeron los demás:\n"
-                        default: prefix = "Sujet: \(topic)\nVoici ce que les autres ont dit :\n"
+                        case "en": userMsg = "Topic: \(topic)\nOthers said:\n\(recent)\nYour turn:"
+                        case "es": userMsg = "Tema: \(topic)\nLos demás dijeron:\n\(recent)\nTu turno:"
+                        default: userMsg = "Sujet: \(topic)\nLes autres ont dit :\n\(recent)\nÀ toi :"
                         }
-                        userMsg = prefix + context
                     }
                 }
                 msgs.append(["role": "user", "content": userMsg])
 
-                self.appendStyled("  \(p.name) \(L10n.s("debate_thinking"))\n", bold: false, color: .gray)
+                showThinking(cat)
 
-                ollamaSingleShot(model: p.model, messages: msgs) { [weak self] response in
+                ollamaSingleShot(model: cat.ollamaChat.model, messages: msgs) { [weak self] response in
                     guard let self = self else { return }
-                    self.replaceLast(with: "")
                     if let r = response {
-                        // Update history for this participant
                         msgs.append(["role": "assistant", "content": r])
-                        histories[ci]["messages"] = msgs
-                        allResponses.append((name: p.name, text: r))
-
-                        self.appendStyled("🐱 \(p.name): ", bold: true, color: self.colorForParticipant(ci))
-                        self.appendStyled(r + "\n", bold: false, color: UI_BROWN)
+                        debateHistories[ci] = msgs
+                        allResponses.append((name: cat.config.name, text: r))
+                        showResponse(cat, r)
                     } else {
-                        self.appendStyled("🐱 \(p.name): ", bold: true, color: self.colorForParticipant(ci))
-                        self.appendStyled("*\(L10n.s("err"))*\n", bold: false, color: .red)
+                        showResponse(cat, L10n.s("err"))
                     }
                     catIdx += 1
-                    nextCat()
+                    // Delay between each cat's turn so user can read
+                    Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { _ in
+                        nextCat()
+                    }
                 }
             }
             nextCat()
         }
-        nextRound()
+        runRound()
     }
 
-    func colorForParticipant(_ index: Int) -> NSColor {
-        guard index < participants.count else { return UI_BROWN }
-        return participants[index].colorDef.color
-    }
+    private func runSynthesis(cats: [CatInstance],
+                              histories: inout [Int: [[String: String]]],
+                              allResponses: [(name: String, text: String)],
+                              topic: String) {
+        // First cat synthesizes
+        let cat = cats[0]
+        var msgs = histories[0] ?? []
+        let allContext = allResponses.map { "\($0.name): \($0.text)" }.joined(separator: "\n")
+        let summaryPrompt: String
+        switch L10n.lang {
+        case "en": summaryPrompt = "The debate on \"\(topic)\" is over. Here's everything that was said:\n\(allContext)\n\nSummarize the debate and the consensus in 2-3 sentences. Use cat sounds."
+        case "es": summaryPrompt = "El debate sobre \"\(topic)\" terminó. Esto es todo lo que se dijo:\n\(allContext)\n\nResume el debate y el consenso en 2-3 frases. Usa sonidos de gato."
+        default: summaryPrompt = "Le débat sur \"\(topic)\" est terminé. Voici tout ce qui a été dit :\n\(allContext)\n\nRésume le débat et le consensus en 2-3 phrases. Utilise des sons de chat."
+        }
+        msgs.append(["role": "user", "content": summaryPrompt])
 
-    func appendStyled(_ text: String, bold: Bool, color: NSColor) {
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedSystemFont(ofSize: 11, weight: bold ? .bold : .regular),
-            .foregroundColor: color
-        ]
-        textView.textStorage?.append(NSAttributedString(string: text, attributes: attrs))
-        textView.scrollToEndOfDocument(nil)
-    }
+        // Hide other bubbles, show synthesis on first cat
+        for c in cats.dropFirst() { c.chatBubble?.hide() }
+        cat.chatBubble?.setResponse("✨ \(L10n.s("debate_summary"))...")
+        cat.chatBubble?.show(aboveCatAt: cat.window.frame)
+        cat.state = .eating; cat.frameIndex = 0
 
-    func replaceLast(with text: String) {
-        guard let storage = textView.textStorage else { return }
-        let str = storage.string
-        if let lastNewline = str.dropLast().lastIndex(of: "\n") {
-            let start = str.distance(from: str.startIndex, to: lastNewline) + 1
-            let range = NSRange(location: start, length: storage.length - start)
-            storage.replaceCharacters(in: range, with: text)
+        ollamaSingleShot(model: cat.ollamaChat.model, messages: msgs) { [weak self] response in
+            guard let self = self else { return }
+            if let r = response {
+                cat.chatBubble?.setResponse("✨ \(L10n.s("debate_summary"))\n\n\(r)")
+                cat.chatBubble?.show(aboveCatAt: cat.window.frame)
+            } else {
+                cat.chatBubble?.setResponse(L10n.s("err"))
+            }
+            cat.state = .idle; cat.frameIndex = 0; cat.idleTicks = 0
+            self.isDebating = false
         }
     }
 }
@@ -794,7 +692,13 @@ class ChatBubbleController {
     var onSend: ((String) -> Void)?
     var onDebate: ((String) -> Void)?
     var catName: String = ""
-    var debateEnabled = false
+    var debateEnabled = false {
+        didSet {
+            if debateEnabled != oldValue, window != nil {
+                rebuildContent(responseText: responseLabel?.text ?? L10n.s("hi"))
+            }
+        }
+    }
     let bubbleW: CGFloat = 300
     var bubbleH: CGFloat = 120
     let px: CGFloat = 3
@@ -1701,7 +1605,7 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
 
     var statusItem: NSStatusItem!
     var settingsCtrl: SettingsWindowController?
-    var debateCtrl: CatDebateController?
+    var debateEngine = DebateEngine()
     var debateEnabled = false
     var localMonitor: Any?
     var globalMonitor: Any?
@@ -1882,24 +1786,11 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func startDebate(from initiator: CatInstance, topic: String) {
-        guard catInstances.count >= 2 else { return }
-        // Close all chat bubbles
+        guard catInstances.count >= 2, !debateEngine.isDebating else { return }
+        // Close all chat bubbles first
         for cat in catInstances { cat.chatBubble?.hide() }
-
-        // Build participants from all active cats
-        let participants = catInstances.map { cat in
-            CatDebateController.Participant(
-                name: cat.config.name,
-                colorDef: cat.colorDef,
-                model: cat.ollamaChat.model
-            )
-        }
-
-        if debateCtrl == nil { debateCtrl = CatDebateController() }
-        debateCtrl!.setup(participants: participants)
-        debateCtrl!.show()
-        debateCtrl!.topicField.stringValue = topic
-        debateCtrl!.startDebate(nil)
+        debateEngine.delegate = self
+        debateEngine.start(topic: topic, cats: catInstances)
     }
 
     // MARK: Status Bar
