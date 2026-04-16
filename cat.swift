@@ -400,47 +400,155 @@ final class DebateEngine {
         self.round = 0
         self.catIdx = 0
 
+        // Switch every participating bubble to passive (non-focus-stealing) mode
+        // so the debate can run while the user keeps working in another app.
+        for cat in cats { cat.chatBubble?.passiveMode = true }
+
         for cat in cats {
             let t = cat.colorDef.traits.localized()
-            let prompt: String
-            switch L10n.lang {
-            case "en":
-                prompt = "You are \(cat.config.name), a \(t) cat debating with other cats. Give your opinion on the topic. Be concise (2-3 sentences max). React to what others said. Use cat sounds (meow, purr, mrrp)."
-            case "es":
-                prompt = "Eres \(cat.config.name), un gato \(t) debatiendo con otros gatos. Da tu opinión sobre el tema. Sé conciso (2-3 frases máx). Reacciona a lo que dijeron los demás. Usa sonidos de gato (miau, purr, mrrp)."
-            default:
-                prompt = "Tu es \(cat.config.name), un chat \(t) qui débat avec d'autres chats. Donne ton avis sur le sujet. Sois concis (2-3 phrases max). Réagis à ce que les autres ont dit. Utilise des sons de chat (miaou, purr, mrrp)."
-            }
-            histories[cat.config.id] = [["role": "system", "content": prompt]]
+            histories[cat.config.id] = [
+                ["role": "system", "content": Self.systemPrompt(catName: cat.config.name, trait: t, topic: topic)],
+            ]
         }
 
         runRound()
     }
 
     /// Abort cleanly — used on app quit or if a participant disappears.
+    /// Restores every bubble to interactive mode so subsequent user clicks work normally.
     func stop() {
         assert(Thread.isMainThread)
         guard isDebating else { return }
         generation &+= 1  // invalidates in-flight callbacks
         isDebating = false
-        for cat in cats { cat.chatBubble?.hide() }
+        for cat in cats {
+            cat.chatBubble?.hide()
+            cat.chatBubble?.passiveMode = false
+        }
         cats.removeAll()
         histories.removeAll()
         responses.removeAll()
+    }
+
+    // MARK: - Prompt builders
+
+    /// System prompt — keeps the model focused on the topic. Personality is
+    /// described as a *voice / tone* (strict instruction not to derail the
+    /// conversation), not as the subject of the conversation.
+    private static func systemPrompt(catName: String, trait: String, topic: String) -> String {
+        switch L10n.lang {
+        case "en":
+            return """
+            You are \(catName), a cat with a \(trait) personality, taking part in a group debate.
+            STRICT RULES:
+            1. Stay 100% on this topic, every single turn: "\(topic)".
+            2. Never change the subject. Never invent unrelated topics. Never say "let's talk about something else".
+            3. If the topic asks for a creative output (a poem, a story, an idea, a plan), you MUST attempt it. Don't refuse, don't say it's hard.
+            4. Your personality (\(trait)) is only your TONE. Don't talk about yourself or your personality.
+            5. Build on what other cats said. Agree, disagree, or add a new angle — but always about the topic.
+            6. Reply in 2 short sentences max. Optional cat sound at the start (Meow, Purr, Mrrp).
+            """
+        case "es":
+            return """
+            Eres \(catName), un gato con personalidad \(trait), participando en un debate grupal.
+            REGLAS ESTRICTAS:
+            1. Mantente 100% en este tema, en cada turno: "\(topic)".
+            2. Nunca cambies de tema. Nunca inventes temas no relacionados. Nunca digas "hablemos de otra cosa".
+            3. Si el tema pide algo creativo (un poema, una historia, una idea, un plan), DEBES intentarlo. No te niegues, no digas que es difícil.
+            4. Tu personalidad (\(trait)) es solo tu TONO. No hables de ti ni de tu personalidad.
+            5. Construye sobre lo que dijeron los otros gatos. Acuerda, discrepa o agrega un ángulo — siempre sobre el tema.
+            6. Responde en 2 frases cortas máx. Sonido de gato opcional al inicio (Miau, Purr, Mrrp).
+            """
+        default:
+            return """
+            Tu es \(catName), un chat avec une personnalité \(trait), qui participe à un débat en groupe.
+            RÈGLES STRICTES :
+            1. Reste à 100% sur ce sujet, à chaque tour : « \(topic) ».
+            2. Ne change JAMAIS de sujet. N'invente pas de sujets sans rapport. Ne dis jamais « parlons d'autre chose ».
+            3. Si le sujet demande une production créative (un poème, une histoire, une idée, un plan), tu DOIS l'essayer. Ne refuse pas, ne dis pas que c'est trop dur.
+            4. Ta personnalité (\(trait)) c'est juste ton TON. Ne parle pas de toi ni de ta personnalité.
+            5. Construis sur ce que les autres chats ont dit. Sois d'accord, en désaccord, ou ajoute un angle — mais toujours sur le sujet.
+            6. Réponds en 2 phrases courtes max. Bruit de chat optionnel au début (Miaou, Purr, Mrrp).
+            """
+        }
+    }
+
+    /// Per-turn user message — re-asserts the topic to keep the model anchored,
+    /// even if it tried to drift in earlier turns.
+    private func userTurnMessage(round: Int, isFirst: Bool) -> String {
+        if isFirst {
+            // Very first turn — just restate topic clearly.
+            switch L10n.lang {
+            case "en": return "Topic to discuss (stay strictly on this): \(topic)\n\nGive your opening take in 2 short sentences."
+            case "es": return "Tema a discutir (quédate estrictamente en esto): \(topic)\n\nDa tu apertura en 2 frases cortas."
+            default:  return "Sujet à discuter (reste strictement dessus) : \(topic)\n\nDonne ton ouverture en 2 phrases courtes."
+            }
+        }
+        // Limit context to the last N turns (others_in_round) to keep prompts tight.
+        let recentCount = min(responses.count, max(cats.count, 2))
+        let recent = responses.suffix(recentCount)
+            .map { "- \($0.name): \($0.text)" }
+            .joined(separator: "\n")
+        switch L10n.lang {
+        case "en": return """
+            Topic (must stay on it): \(topic)
+            Recent points from the others:
+            \(recent)
+            Your turn (2 short sentences, on topic, react to at least one cat above):
+            """
+        case "es": return """
+            Tema (debes quedarte en él): \(topic)
+            Puntos recientes de los otros:
+            \(recent)
+            Tu turno (2 frases cortas, sobre el tema, reacciona al menos a un gato arriba):
+            """
+        default: return """
+            Sujet (tu dois rester dessus) : \(topic)
+            Points récents des autres :
+            \(recent)
+            À toi (2 phrases courtes, sur le sujet, réagis à au moins un chat ci-dessus) :
+            """
+        }
+    }
+
+    private func synthesisPrompt(allContext: String) -> String {
+        switch L10n.lang {
+        case "en":
+            return """
+            The debate on "\(topic)" is over. All contributions:
+            \(allContext)
+
+            Now produce the FINAL ANSWER to the original topic. If the topic asked for a creative output (poem, story, plan, idea), DELIVER IT in full here, synthesising the best ideas from the cats above. If it was a question, give the consensus answer. 4-6 sentences max. No meta-talk about the debate itself.
+            """
+        case "es":
+            return """
+            El debate sobre "\(topic)" terminó. Todas las contribuciones:
+            \(allContext)
+
+            Ahora produce la RESPUESTA FINAL al tema original. Si el tema pedía algo creativo (poema, historia, plan, idea), ENTRÉGALO aquí, sintetizando las mejores ideas de los gatos. Si era una pregunta, da la respuesta de consenso. Máx 4-6 frases. Sin meta-comentarios sobre el debate.
+            """
+        default:
+            return """
+            Le débat sur « \(topic) » est terminé. Toutes les contributions :
+            \(allContext)
+
+            Maintenant produis la RÉPONSE FINALE au sujet original. Si le sujet demandait quelque chose de créatif (poème, histoire, plan, idée), LIVRE-LE ici, en synthétisant les meilleures idées des chats. Si c'était une question, donne la réponse consensus. Max 4-6 phrases. Pas de méta-commentaire sur le débat lui-même.
+            """
+        }
     }
 
     // MARK: - Private flow
 
     private func showThinking(_ cat: CatInstance) {
         cat.chatBubble?.setResponse("\(cat.config.name) \(L10n.s("debate_thinking"))")
-        cat.chatBubble?.show(aboveCatAt: cat.window.frame)
+        cat.chatBubble?.showPassive(aboveCatAt: cat.window.frame)
         cat.state = .eating; cat.frameIndex = 0
     }
 
     private func showResponse(_ cat: CatInstance, _ text: String) {
         let roundLabel = "[\(L10n.s("debate_round")) \(round)] "
         cat.chatBubble?.setResponse(roundLabel + text)
-        cat.chatBubble?.show(aboveCatAt: cat.window.frame)
+        cat.chatBubble?.showPassive(aboveCatAt: cat.window.frame)
         cat.state = .idle; cat.frameIndex = 0; cat.idleTicks = 0
     }
 
@@ -476,25 +584,8 @@ final class DebateEngine {
         let catId = cat.config.id
         var msgs = histories[catId] ?? []
 
-        // Build context: topic + what others said
-        let userMsg: String
-        if round == 1 && catIdx == 0 {
-            userMsg = topic
-        } else {
-            let recentCount = min(responses.count, cats.count)
-            let recent = responses.suffix(recentCount)
-                .map { "\($0.name): \($0.text)" }
-                .joined(separator: "\n")
-            if recent.isEmpty {
-                userMsg = topic
-            } else {
-                switch L10n.lang {
-                case "en": userMsg = "Topic: \(topic)\nOthers said:\n\(recent)\nYour turn:"
-                case "es": userMsg = "Tema: \(topic)\nLos demás dijeron:\n\(recent)\nTu turno:"
-                default: userMsg = "Sujet: \(topic)\nLes autres ont dit :\n\(recent)\nÀ toi :"
-                }
-            }
-        }
+        let isVeryFirst = (round == 1 && catIdx == 0)
+        let userMsg = userTurnMessage(round: round, isFirst: isVeryFirst)
         msgs.append(["role": "user", "content": userMsg])
 
         showThinking(cat)
@@ -532,34 +623,35 @@ final class DebateEngine {
             return
         }
         var msgs = histories[cat.config.id] ?? []
-        let allContext = responses.map { "\($0.name): \($0.text)" }.joined(separator: "\n")
-        let summaryPrompt: String
-        switch L10n.lang {
-        case "en": summaryPrompt = "The debate on \"\(topic)\" is over. Here's everything that was said:\n\(allContext)\n\nSummarize the debate and the consensus in 2-3 sentences. Use cat sounds."
-        case "es": summaryPrompt = "El debate sobre \"\(topic)\" terminó. Esto es todo lo que se dijo:\n\(allContext)\n\nResume el debate y el consenso en 2-3 frases. Usa sonidos de gato."
-        default: summaryPrompt = "Le débat sur \"\(topic)\" est terminé. Voici tout ce qui a été dit :\n\(allContext)\n\nRésume le débat et le consensus en 2-3 phrases. Utilise des sons de chat."
-        }
-        msgs.append(["role": "user", "content": summaryPrompt])
+        let allContext = responses.map { "- \($0.name): \($0.text)" }.joined(separator: "\n")
+        msgs.append(["role": "user", "content": synthesisPrompt(allContext: allContext)])
 
         for c in cats.dropFirst() { c.chatBubble?.hide() }
         cat.chatBubble?.setResponse("✨ \(L10n.s("debate_summary"))...")
-        cat.chatBubble?.show(aboveCatAt: cat.window.frame)
+        cat.chatBubble?.showPassive(aboveCatAt: cat.window.frame)
         cat.state = .eating; cat.frameIndex = 0
 
         let myGen = generation
+        let allCats = cats
         ollamaSingleShot(model: cat.ollamaChat.model, messages: msgs) { [weak self] response in
             guard let self, self.generation == myGen else { return }
             // Cat may have been removed during synthesis — guard the chatBubble access
             if self.cats.contains(where: { $0.config.id == cat.config.id }) {
                 if let r = response {
                     cat.chatBubble?.setResponse("✨ \(L10n.s("debate_summary"))\n\n\(r)")
-                    cat.chatBubble?.show(aboveCatAt: cat.window.frame)
+                    cat.chatBubble?.showPassive(aboveCatAt: cat.window.frame)
                 } else {
                     cat.chatBubble?.setResponse(L10n.s("err"))
                 }
                 cat.state = .idle; cat.frameIndex = 0; cat.idleTicks = 0
             }
             self.isDebating = false
+            // Restore interactive mode on every bubble after a short delay so the
+            // synthesis remains readable without immediately stealing focus.
+            self.scheduleOnMain(after: 8.0) { [weak self] in
+                guard let self, !self.isDebating else { return }
+                for c in allCats { c.chatBubble?.passiveMode = false }
+            }
         }
     }
 
@@ -791,8 +883,11 @@ class PixelLabel: NSView {
 // MARK: - KeyableWindow
 
 class KeyableWindow: NSWindow {
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
+    /// Set to true while a debate is in progress so the bubble cannot steal
+    /// keyboard focus from whatever app the user is currently typing into.
+    var passive = false
+    override var canBecomeKey: Bool { !passive }
+    override var canBecomeMain: Bool { !passive }
 }
 
 // MARK: - Chat Bubble
@@ -810,6 +905,17 @@ class ChatBubbleController {
     var debateEnabled = false {
         didSet {
             if debateEnabled != oldValue, window != nil {
+                rebuildContent(responseText: responseLabel?.text ?? L10n.s("hi"))
+            }
+        }
+    }
+    /// When true: no input field, no debate button, window ignores mouse events
+    /// and never becomes key. Used during a debate so the user can keep working.
+    var passiveMode = false {
+        didSet {
+            if passiveMode != oldValue, window != nil {
+                window.ignoresMouseEvents = passiveMode
+                (window as? KeyableWindow)?.passive = passiveMode
                 rebuildContent(responseText: responseLabel?.text ?? L10n.s("hi"))
             }
         }
@@ -848,10 +954,16 @@ class ChatBubbleController {
         if let f = inputField { savedInputText = f.stringValue }
         let content = window.contentView!
         content.subviews.forEach { $0.removeFromSuperview() }
+        debateButton = nil
+        if passiveMode { inputField = nil }
 
         let textH = computeTextHeight(for: responseText)
-        let extraH: CGFloat = debateEnabled ? debateBtnH + 4 : 0
-        let bodyH = padding + nameH + 4 + textH + gap + inputH + extraH + padding
+        // Passive (debate) mode: no input field, no debate button — display only.
+        let showInteractive = !passiveMode
+        let inputBlockH: CGFloat = showInteractive ? inputH : 0
+        let extraH: CGFloat = (showInteractive && debateEnabled) ? debateBtnH + 4 : 0
+        let inputGap: CGFloat = showInteractive ? gap : 0
+        let bodyH = padding + nameH + 4 + textH + inputGap + inputBlockH + extraH + padding
         bubbleH = bodyH + tailH
 
         let oldFrame = window.frame
@@ -874,14 +986,22 @@ class ChatBubbleController {
         nameLabel.text = catName; nameLabel.fontSize = 12
         nameLabel.alignment = .center; nameLabel.wraps = false
         nameLabel.textColor = UI_BROWN
-        nameLabel.frame = NSRect(x: 20, y: tailH + padding + inputH + gap + textH + 4, width: textW, height: nameH)
+        nameLabel.frame = NSRect(
+            x: 20,
+            y: tailH + padding + inputBlockH + inputGap + extraH + textH + 4,
+            width: textW, height: nameH)
         content.addSubview(nameLabel)
 
         responseLabel = PixelLabel()
         responseLabel.text = responseText; responseLabel.fontSize = 11
         responseLabel.alignment = .left; responseLabel.wraps = true
-        responseLabel.frame = NSRect(x: 20, y: tailH + padding + inputH + gap, width: textW, height: textH)
+        responseLabel.frame = NSRect(
+            x: 20,
+            y: tailH + padding + inputBlockH + inputGap + extraH,
+            width: textW, height: textH)
         content.addSubview(responseLabel)
+
+        guard showInteractive else { return }
 
         let inputY = tailH + padding + (debateEnabled ? debateBtnH + 4 : 0)
         inputField = NSTextField(frame: NSRect(x: 20, y: inputY, width: textW, height: inputH))
@@ -918,6 +1038,8 @@ class ChatBubbleController {
         inputField.stringValue = ""; onDebate?(text)
     }
 
+    /// Show the bubble for normal user interaction — focuses input field and
+    /// activates the app so the user can type immediately.
     func show(aboveCatAt catFrame: NSRect) {
         let bx = catFrame.midX - bubbleW / 2
         let by = catFrame.maxY + 4
@@ -925,6 +1047,18 @@ class ChatBubbleController {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         window.makeFirstResponder(inputField)
+    }
+
+    /// Show the bubble passively — used during debate so it never steals focus
+    /// from whatever app the user is working in. The bubble appears above the cat
+    /// at its floating window level, but is non-key, non-activating, and the input
+    /// field is removed (debate doesn't need it).
+    func showPassive(aboveCatAt catFrame: NSRect) {
+        let bx = catFrame.midX - bubbleW / 2
+        let by = catFrame.maxY + 4
+        window.setFrame(NSRect(x: bx, y: by, width: bubbleW, height: bubbleH), display: true)
+        // orderFrontRegardless == "show on top of *its* level group, but don't activate the app"
+        window.orderFrontRegardless()
     }
 
     /// Reposition only — no focus steal, used during cat movement
@@ -2135,6 +2269,9 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
                 let wasDrag = cat.endDrag()
                 activeDragCat = nil
                 if !wasDrag {
+                    // During a debate, ignore clicks on cats — bubbles are passive
+                    // display only and we don't want the user to break the flow.
+                    if debateEngine.isDebating { return event }
                     // Close other bubbles, toggle this one
                     for c in catInstances where c !== cat { c.chatBubble?.hide() }
                     cat.toggleChat()

@@ -115,6 +115,18 @@ Click the 🐱 menu bar icon → Settings:
 
 ## Changelog
 
+### v2.0.2 — Debate UX overhaul: focused & non-intrusive (2026-04-16)
+- **Focused debate** — cats now stay strictly on the user-supplied topic
+  - System prompt rewritten as 6 strict rules: stay on topic, never derail, attempt creative tasks, personality is just *tone*, react to others, 2 short sentences
+  - Each turn re-asserts the topic in the user message → no more drifting from "write a poem" to "what's a dinosaur"
+  - Final synthesis now actually delivers the requested artefact (poem, plan, idea) instead of meta-summarising
+- **Non-intrusive bubbles** — debate bubbles no longer steal focus from your work
+  - New `passiveMode`: `ignoresMouseEvents = true`, `canBecomeKey = false`, no input field, no buttons
+  - Uses `orderFrontRegardless` (display only) instead of `makeKeyAndOrderFront` + `NSApp.activate`
+  - You can keep typing in your editor, switching apps, etc. — the debate just unfolds visually above your cats
+- Clicks on cats are ignored during a debate (no accidental flow break)
+- Bubbles auto-revert to interactive mode 8s after the synthesis appears
+
 ### v2.0.1 — Code quality pass: critical fixes & stability hardening (2026-04-16)
 - **Debate engine** rewritten as a stateful class — eliminates Swift 6 Sendable warnings
   - Validates each cat still exists before its turn (survives mid-debate cat removal)
