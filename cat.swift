@@ -28,6 +28,30 @@ let MEM_MAX = 20
 
 enum CatState { case idle, walking, eating, drinking, angry, sleeping, wakingUp, chasing, looking }
 
+/// Tunable behaviour parameters — grouped here so we can reason about cat AI as a whole
+/// instead of hunting magic numbers across the file.
+enum BehaviorTuning {
+    // Chase
+    static let chaseMaxTicks      = 80           // give up after this many ticks
+    static let chaseStartChance   = 0.15         // proba of switching to chase when looking
+    static let chaseStopRatio: CGFloat = 0.4     // stop when within (displayW * ratio)
+
+    // Idle decisions (per-tick)
+    static let sleepIdleThreshold = 15           // need this many idle ticks before sleeping
+    static let sleepChance        = 0.05
+    static let walkChance         = 0.25
+    static let eatChance          = 0.30
+    static let drinkChance        = 0.35
+    static let meowChance         = 0.38
+
+    // Sleeping
+    static let wakeMinSec         = 5
+    static let wakeMaxSec         = 15
+
+    // Mouse look
+    static let lookExclusionRatio: CGFloat = 0.4 // ignore cursor closer than displayW*ratio
+}
+
 let animKeys: [CatState: String] = [
     .walking: "running-8-frames", .eating: "eating", .drinking: "drinking",
     .angry: "angry", .wakingUp: "waking-getting-up", .chasing: "running-8-frames",
@@ -49,6 +73,13 @@ func directionFromAngle(_ angleDeg: CGFloat) -> String {
 }
 
 // MARK: - Localization
+
+extension Dictionary where Key == String, Value == String {
+    /// Returns `self[L10n.lang] ?? self["fr"] ?? ""`. Centralises the fallback chain.
+    func localized(default fallback: String = "") -> String {
+        self[L10n.lang] ?? self["fr"] ?? fallback
+    }
+}
 
 struct L10n {
     static var lang = "fr"
@@ -105,6 +136,7 @@ struct CatColorDef {
     func prompt(name: String, lang: String) -> String {
         let t = traits[lang] ?? traits["fr"] ?? ""
         let s = skills[lang] ?? skills["fr"] ?? ""
+        // (lang param overrides L10n.lang here so Dictionary.localized() is not used.)
         if id == "percy" {
             switch lang {
             case "en": return "You are \(name), a white cat with black patches. Your dad is the king of the internet. You talk in a funny, exaggerated way, mixing cat sounds with old internet references from the 1980s-1990s (Astalavista, GeoCities, Netscape, IRC, BBS, AOL, 56k modems, ICQ, Altavista, Lycos, 'You've got mail', ASCII art, Usenet, 'surfing the web', dial-up sounds). You brag about your dad's legendary status. You say things like 'back in my dad's day...' and 'noobs these days don't know...'. Respond briefly with cat sounds (meow, purr, mrrp). Max 2-3 sentences."
@@ -198,6 +230,17 @@ func saveMemory(_ catId: String, _ msgs: [[String: String]]) {
 }
 func deleteMemory(_ catId: String) { UserDefaults.standard.removeObject(forKey: "mem_\(catId)") }
 
+/// Remove `mem_<UUID>` entries whose cat no longer exists. Prevents UserDefaults bloat
+/// when users add/remove cats over time (each gets a fresh UUID).
+func purgeOrphanMemories(activeIds: Set<String>) {
+    let defaults = UserDefaults.standard
+    let prefix = "mem_"
+    for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(prefix) {
+        let id = String(key.dropFirst(prefix.count))
+        if !activeIds.contains(id) { defaults.removeObject(forKey: key) }
+    }
+}
+
 // MARK: - Ollama API
 
 func fetchOllamaModels(completion: @escaping ([String]) -> Void) {
@@ -219,6 +262,13 @@ class OllamaChat {
     private var activeSession: URLSession?
 
     init(model: String) { self.model = model }
+
+    /// Cancel the in-flight stream (if any) without starting a new one.
+    func cancel() {
+        activeSession?.invalidateAndCancel()
+        activeSession = nil
+        isStreaming = false
+    }
 
     func send(_ text: String, onToken: @escaping (String) -> Void,
               onDone: @escaping () -> Void, onError: ((String) -> Void)? = nil) {
@@ -251,17 +301,28 @@ class OllamaChat {
                     DispatchQueue.main.async { onToken(content) }
                 }
             },
-            onComplete: { [weak self] in
+            onComplete: { [weak self] session in
                 DispatchQueue.main.async {
-                    if !fullResponse.isEmpty {
-                        self?.messages.append(["role": "assistant", "content": fullResponse])
+                    guard let self = self else {
+                        // Owner gone — still release the session so the delegate is freed.
+                        session.finishTasksAndInvalidate()
+                        return
                     }
-                    self?.isStreaming = false
-                    self?.activeSession = nil
+                    if !fullResponse.isEmpty {
+                        self.messages.append(["role": "assistant", "content": fullResponse])
+                    }
+                    self.isStreaming = false
+                    // Only nullify if this callback corresponds to the *current* session.
+                    // A newer send() may have already replaced activeSession.
+                    if self.activeSession === session {
+                        self.activeSession = nil
+                    }
+                    // Release delegate retained by the session.
+                    session.finishTasksAndInvalidate()
                     onDone()
                 }
             },
-            onError: { error in
+            onError: { _ in
                 DispatchQueue.main.async { onError?(L10n.s("err")) }
             }
         )
@@ -274,16 +335,18 @@ class OllamaChat {
 
 class StreamDelegate: NSObject, URLSessionDataDelegate {
     let onData: (Data) -> Void
-    let onComplete: () -> Void
+    let onComplete: (URLSession) -> Void
     var onError: ((Error) -> Void)?
 
-    init(onData: @escaping (Data) -> Void, onComplete: @escaping () -> Void, onError: ((Error) -> Void)? = nil) {
+    init(onData: @escaping (Data) -> Void,
+         onComplete: @escaping (URLSession) -> Void,
+         onError: ((Error) -> Void)? = nil) {
         self.onData = onData; self.onComplete = onComplete; self.onError = onError
     }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) { onData(data) }
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         if let error = error, (error as NSError).code != NSURLErrorCancelled { onError?(error) }
-        onComplete()
+        onComplete(session)
     }
 }
 
@@ -308,20 +371,37 @@ func ollamaSingleShot(model: String, messages: [[String: String]],
     }.resume()
 }
 
-/// Orchestrates a multi-cat debate using each cat's own chat bubble
-class DebateEngine {
-    var isDebating = false
+/// Orchestrates a multi-cat debate using each cat's own chat bubble.
+/// All state lives in the class (no captured-var warnings) and every mutation
+/// happens on the main thread. The engine validates cat references before each
+/// step to survive cat removal / app quit during a debate.
+final class DebateEngine {
+    private(set) var isDebating = false
     let maxRounds = 4
-    weak var delegate: CatAppDelegate?
+
+    // Mutable state — only touched on main thread
+    private var histories: [String: [[String: String]]] = [:]  // key = cat.config.id
+    private var responses: [(name: String, text: String)] = []
+    private var cats: [CatInstance] = []
+    private var topic: String = ""
+    private var round = 0
+    private var catIdx = 0
+    private var generation = 0  // invalidates pending callbacks when we stop
 
     func start(topic: String, cats: [CatInstance]) {
+        assert(Thread.isMainThread)
         guard cats.count >= 2, !isDebating else { return }
         isDebating = true
+        generation &+= 1
+        self.topic = topic
+        self.cats = cats
+        self.histories.removeAll(keepingCapacity: true)
+        self.responses.removeAll(keepingCapacity: true)
+        self.round = 0
+        self.catIdx = 0
 
-        // Build per-cat debate histories (separate from normal chat)
-        var debateHistories: [Int: [[String: String]]] = [:]
-        for (i, cat) in cats.enumerated() {
-            let t = cat.colorDef.traits[L10n.lang] ?? cat.colorDef.traits["fr"] ?? ""
+        for cat in cats {
+            let t = cat.colorDef.traits.localized()
             let prompt: String
             switch L10n.lang {
             case "en":
@@ -331,108 +411,128 @@ class DebateEngine {
             default:
                 prompt = "Tu es \(cat.config.name), un chat \(t) qui débat avec d'autres chats. Donne ton avis sur le sujet. Sois concis (2-3 phrases max). Réagis à ce que les autres ont dit. Utilise des sons de chat (miaou, purr, mrrp)."
             }
-            debateHistories[i] = [["role": "system", "content": prompt]]
+            histories[cat.config.id] = [["role": "system", "content": prompt]]
         }
 
-        var allResponses: [(name: String, text: String)] = []
-        var round = 0
-
-        // Show "thinking" in a cat's bubble
-        func showThinking(_ cat: CatInstance) {
-            cat.chatBubble?.setResponse("\(cat.config.name) \(L10n.s("debate_thinking"))")
-            cat.chatBubble?.show(aboveCatAt: cat.window.frame)
-            cat.state = .eating; cat.frameIndex = 0
-        }
-
-        // Show response in a cat's bubble
-        func showResponse(_ cat: CatInstance, _ text: String) {
-            let roundLabel = "[\(L10n.s("debate_round")) \(round)] "
-            cat.chatBubble?.setResponse(roundLabel + text)
-            cat.chatBubble?.show(aboveCatAt: cat.window.frame)
-            cat.state = .idle; cat.frameIndex = 0; cat.idleTicks = 0
-        }
-
-        func runRound() {
-            guard round < self.maxRounds else {
-                // Final synthesis
-                self.runSynthesis(cats: cats, histories: &debateHistories,
-                                  allResponses: allResponses, topic: topic)
-                return
-            }
-            round += 1
-
-            var catIdx = 0
-            func nextCat() {
-                guard catIdx < cats.count else {
-                    // Small delay before next round
-                    Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { _ in
-                        // Hide all bubbles before next round
-                        for cat in cats { cat.chatBubble?.hide() }
-                        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { _ in
-                            runRound()
-                        }
-                    }
-                    return
-                }
-
-                let cat = cats[catIdx]
-                let ci = catIdx
-                var msgs = debateHistories[ci] ?? []
-
-                // Build context: topic + what others said
-                let userMsg: String
-                if round == 1 && catIdx == 0 {
-                    userMsg = topic
-                } else {
-                    // Last N responses from other cats
-                    let recentCount = min(allResponses.count, cats.count)
-                    let recent = allResponses.suffix(recentCount)
-                        .map { "\($0.name): \($0.text)" }
-                        .joined(separator: "\n")
-                    if recent.isEmpty {
-                        userMsg = topic
-                    } else {
-                        switch L10n.lang {
-                        case "en": userMsg = "Topic: \(topic)\nOthers said:\n\(recent)\nYour turn:"
-                        case "es": userMsg = "Tema: \(topic)\nLos demás dijeron:\n\(recent)\nTu turno:"
-                        default: userMsg = "Sujet: \(topic)\nLes autres ont dit :\n\(recent)\nÀ toi :"
-                        }
-                    }
-                }
-                msgs.append(["role": "user", "content": userMsg])
-
-                showThinking(cat)
-
-                ollamaSingleShot(model: cat.ollamaChat.model, messages: msgs) { [weak self] response in
-                    guard let self = self else { return }
-                    if let r = response {
-                        msgs.append(["role": "assistant", "content": r])
-                        debateHistories[ci] = msgs
-                        allResponses.append((name: cat.config.name, text: r))
-                        showResponse(cat, r)
-                    } else {
-                        showResponse(cat, L10n.s("err"))
-                    }
-                    catIdx += 1
-                    // Delay between each cat's turn so user can read
-                    Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { _ in
-                        nextCat()
-                    }
-                }
-            }
-            nextCat()
-        }
         runRound()
     }
 
-    private func runSynthesis(cats: [CatInstance],
-                              histories: inout [Int: [[String: String]]],
-                              allResponses: [(name: String, text: String)],
-                              topic: String) {
-        // First cat synthesizes
-        let cat = cats[0]
-        var msgs = histories[0] ?? []
-        let allContext = allResponses.map { "\($0.name): \($0.text)" }.joined(separator: "\n")
+    /// Abort cleanly — used on app quit or if a participant disappears.
+    func stop() {
+        assert(Thread.isMainThread)
+        guard isDebating else { return }
+        generation &+= 1  // invalidates in-flight callbacks
+        isDebating = false
+        for cat in cats { cat.chatBubble?.hide() }
+        cats.removeAll()
+        histories.removeAll()
+        responses.removeAll()
+    }
+
+    // MARK: - Private flow
+
+    private func showThinking(_ cat: CatInstance) {
+        cat.chatBubble?.setResponse("\(cat.config.name) \(L10n.s("debate_thinking"))")
+        cat.chatBubble?.show(aboveCatAt: cat.window.frame)
+        cat.state = .eating; cat.frameIndex = 0
+    }
+
+    private func showResponse(_ cat: CatInstance, _ text: String) {
+        let roundLabel = "[\(L10n.s("debate_round")) \(round)] "
+        cat.chatBubble?.setResponse(roundLabel + text)
+        cat.chatBubble?.show(aboveCatAt: cat.window.frame)
+        cat.state = .idle; cat.frameIndex = 0; cat.idleTicks = 0
+    }
+
+    private func runRound() {
+        assert(Thread.isMainThread)
+        guard isDebating else { return }
+        guard round < maxRounds else {
+            runSynthesis()
+            return
+        }
+        round += 1
+        catIdx = 0
+        nextCat()
+    }
+
+    private func nextCat() {
+        assert(Thread.isMainThread)
+        guard isDebating else { return }
+
+        if catIdx >= cats.count {
+            // End of round — pause, hide bubbles, next round
+            scheduleOnMain(after: 2.0) { [weak self] in
+                guard let self, self.isDebating else { return }
+                for cat in self.cats { cat.chatBubble?.hide() }
+                self.scheduleOnMain(after: 0.5) { [weak self] in
+                    self?.runRound()
+                }
+            }
+            return
+        }
+
+        let cat = cats[catIdx]
+        let catId = cat.config.id
+        var msgs = histories[catId] ?? []
+
+        // Build context: topic + what others said
+        let userMsg: String
+        if round == 1 && catIdx == 0 {
+            userMsg = topic
+        } else {
+            let recentCount = min(responses.count, cats.count)
+            let recent = responses.suffix(recentCount)
+                .map { "\($0.name): \($0.text)" }
+                .joined(separator: "\n")
+            if recent.isEmpty {
+                userMsg = topic
+            } else {
+                switch L10n.lang {
+                case "en": userMsg = "Topic: \(topic)\nOthers said:\n\(recent)\nYour turn:"
+                case "es": userMsg = "Tema: \(topic)\nLos demás dijeron:\n\(recent)\nTu turno:"
+                default: userMsg = "Sujet: \(topic)\nLes autres ont dit :\n\(recent)\nÀ toi :"
+                }
+            }
+        }
+        msgs.append(["role": "user", "content": userMsg])
+
+        showThinking(cat)
+
+        let myGen = generation
+        let myModel = cat.ollamaChat.model
+        ollamaSingleShot(model: myModel, messages: msgs) { [weak self] response in
+            // Back on main thread via ollamaSingleShot
+            guard let self, self.isDebating, self.generation == myGen else { return }
+            // Validate cat still participating (user may have removed it)
+            guard self.cats.contains(where: { $0.config.id == catId }) else {
+                self.catIdx += 1
+                self.nextCat()
+                return
+            }
+            if let r = response {
+                msgs.append(["role": "assistant", "content": r])
+                self.histories[catId] = msgs
+                self.responses.append((name: cat.config.name, text: r))
+                self.showResponse(cat, r)
+            } else {
+                self.showResponse(cat, L10n.s("err"))
+            }
+            self.catIdx += 1
+            self.scheduleOnMain(after: 3.0) { [weak self] in
+                self?.nextCat()
+            }
+        }
+    }
+
+    private func runSynthesis() {
+        assert(Thread.isMainThread)
+        guard isDebating, let cat = cats.first else {
+            isDebating = false
+            return
+        }
+        var msgs = histories[cat.config.id] ?? []
+        let allContext = responses.map { "\($0.name): \($0.text)" }.joined(separator: "\n")
         let summaryPrompt: String
         switch L10n.lang {
         case "en": summaryPrompt = "The debate on \"\(topic)\" is over. Here's everything that was said:\n\(allContext)\n\nSummarize the debate and the consensus in 2-3 sentences. Use cat sounds."
@@ -441,23 +541,32 @@ class DebateEngine {
         }
         msgs.append(["role": "user", "content": summaryPrompt])
 
-        // Hide other bubbles, show synthesis on first cat
         for c in cats.dropFirst() { c.chatBubble?.hide() }
         cat.chatBubble?.setResponse("✨ \(L10n.s("debate_summary"))...")
         cat.chatBubble?.show(aboveCatAt: cat.window.frame)
         cat.state = .eating; cat.frameIndex = 0
 
+        let myGen = generation
         ollamaSingleShot(model: cat.ollamaChat.model, messages: msgs) { [weak self] response in
-            guard let self = self else { return }
-            if let r = response {
-                cat.chatBubble?.setResponse("✨ \(L10n.s("debate_summary"))\n\n\(r)")
-                cat.chatBubble?.show(aboveCatAt: cat.window.frame)
-            } else {
-                cat.chatBubble?.setResponse(L10n.s("err"))
+            guard let self, self.generation == myGen else { return }
+            // Cat may have been removed during synthesis — guard the chatBubble access
+            if self.cats.contains(where: { $0.config.id == cat.config.id }) {
+                if let r = response {
+                    cat.chatBubble?.setResponse("✨ \(L10n.s("debate_summary"))\n\n\(r)")
+                    cat.chatBubble?.show(aboveCatAt: cat.window.frame)
+                } else {
+                    cat.chatBubble?.setResponse(L10n.s("err"))
+                }
+                cat.state = .idle; cat.frameIndex = 0; cat.idleTicks = 0
             }
-            cat.state = .idle; cat.frameIndex = 0; cat.idleTicks = 0
             self.isDebating = false
         }
+    }
+
+    /// Schedule `block` on the main run loop after `delay` seconds.
+    /// Safer than Timer.scheduledTimer when called from a URLSession callback queue.
+    private func scheduleOnMain(after delay: TimeInterval, _ block: @escaping () -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: block)
     }
 }
 
@@ -479,8 +588,14 @@ func fixedDockHeight() -> CGFloat {
 
 // MARK: - Asset Loading & Tinting
 
-/// Cache tinted sprites at original resolution — key: "colorId:relativePath"
-var tintCache: [String: NSImage] = [:]
+/// LRU cache for tinted sprites at original resolution. Bounded to avoid unbounded
+/// growth as users switch sizes / add/remove colored cats over time.
+/// Key: "colorId:relativePath".
+let tintCache: NSCache<NSString, NSImage> = {
+    let c = NSCache<NSString, NSImage>()
+    c.countLimit = 600   // 7 cats × ~80 sprites + headroom
+    return c
+}()
 
 func tintSprite(_ src: NSImage, color: CatColorDef) -> NSImage {
     if color.id == "orange" { return src }
@@ -566,13 +681,13 @@ func loadTintAndScale(path: String, to size: NSSize, color: CatColorDef) -> NSIm
         }
     }
     // Use cached tinted sprite at original resolution, only scale to target size
-    let cacheKey = "\(color.id):\(path)"
+    let cacheKey = "\(color.id):\(path)" as NSString
     let tinted: NSImage
-    if let cached = tintCache[cacheKey] {
+    if let cached = tintCache.object(forKey: cacheKey) {
         tinted = cached
     } else {
         tinted = tintSprite(source, color: color)
-        tintCache[cacheKey] = tinted
+        tintCache.setObject(tinted, forKey: cacheKey)
     }
     return NSImage(size: size, flipped: false) { rect in
         NSGraphicsContext.current?.imageInterpolation = .none
@@ -828,9 +943,16 @@ class ChatBubbleController {
         let newText = responseLabel.text + token
         let newH = computeTextHeight(for: newText)
         if abs(newH - responseLabel.frame.height) > 3 {
+            // Height changed enough to need a relayout. Preserve the user's focus
+            // state instead of always stealing it back to the input field.
+            let wasFocused = (window.firstResponder as? NSView) === inputField
+                || (window.firstResponder as? NSText)?.delegate === (inputField as? NSTextFieldDelegate)
             rebuildContent(responseText: newText)
-            window.makeFirstResponder(inputField)
-        } else { responseLabel.text = newText }
+            if wasFocused { window.makeFirstResponder(inputField) }
+        } else {
+            // Cheap path: just update the label, no view recreation, no flicker.
+            responseLabel.text = newText
+        }
     }
 }
 
@@ -1005,9 +1127,9 @@ class CatInstance {
             let dy = mouse.y - (y + displayH / 2)
             let dist = hypot(dx, dy)
 
-            if dist > CatInstance.CHASE_GIVE_UP || chaseTicks > 80 {
+            if dist > CatInstance.CHASE_GIVE_UP || chaseTicks > BehaviorTuning.chaseMaxTicks {
                 state = .idle; frameIndex = 0; idleTicks = 0; chaseTicks = 0
-            } else if dist < displayW * 0.4 {
+            } else if dist < displayW * BehaviorTuning.chaseStopRatio {
                 state = .idle; frameIndex = 0; idleTicks = 0; chaseTicks = 0
             } else {
                 direction = directionFromAngle(atan2(dy, dx) * 180.0 / .pi)
@@ -1052,11 +1174,11 @@ class CatInstance {
 
         if state == .idle || state == .looking {
             // Look at cursor if nearby
-            if mouseDist < CatInstance.LOOK_RADIUS && mouseDist > displayW * 0.4 {
+            if mouseDist < CatInstance.LOOK_RADIUS && mouseDist > displayW * BehaviorTuning.lookExclusionRatio {
                 direction = mouseDir
                 if state != .looking { state = .looking; idleTicks = 0 }
                 // Chance to start chasing if cursor is close enough
-                if mouseDist < CatInstance.CHASE_RADIUS && Double.random(in: 0..<1) < 0.15 {
+                if mouseDist < CatInstance.CHASE_RADIUS && Double.random(in: 0..<1) < BehaviorTuning.chaseStartChance {
                     state = .chasing; frameIndex = 0; chaseTicks = 0; hideMeow()
                     return
                 }
@@ -1069,9 +1191,9 @@ class CatInstance {
         if state == .idle {
             idleTicks += 1
             let r = Double.random(in: 0..<1)
-            if idleTicks > 15 && r < 0.05 {
+            if idleTicks > BehaviorTuning.sleepIdleThreshold && r < BehaviorTuning.sleepChance {
                 state = .sleeping; idleTicks = 0
-            } else if r < 0.25 {
+            } else if r < BehaviorTuning.walkChance {
                 if posMode == .onDock {
                     state = .walking; frameIndex = 0
                     destX = CGFloat.random(in: displayW...(max(displayW + 1, screenW - displayW)))
@@ -1080,16 +1202,18 @@ class CatInstance {
                     let lo = wb.minX; let hi = max(lo + displayW, wb.maxX - displayW)
                     destX = CGFloat.random(in: lo...hi)
                 }
-            } else if r < 0.30 { state = .eating; frameIndex = 0 }
-            else if r < 0.35 { state = .drinking; frameIndex = 0 }
-            else if r < 0.38 { showRandomMeow() }
+            } else if r < BehaviorTuning.eatChance { state = .eating; frameIndex = 0 }
+            else if r < BehaviorTuning.drinkChance { state = .drinking; frameIndex = 0 }
+            else if r < BehaviorTuning.meowChance { showRandomMeow() }
         } else if state == .sleeping {
             // Wake up if cursor is very close
             if mouseDist < CatInstance.CHASE_RADIUS {
                 state = .wakingUp; frameIndex = 0; idleTicks = 0
             } else {
                 idleTicks += 1
-                if idleTicks > Int.random(in: 5...15) { state = .wakingUp; frameIndex = 0; idleTicks = 0 }
+                if idleTicks > Int.random(in: BehaviorTuning.wakeMinSec...BehaviorTuning.wakeMaxSec) {
+                    state = .wakingUp; frameIndex = 0; idleTicks = 0
+                }
             }
         }
     }
@@ -1584,6 +1708,19 @@ class SettingsWindowController {
 // MARK: - App Delegate
 
 class CatAppDelegate: NSObject, NSApplicationDelegate {
+    /// Show a critical alert and terminate the app.
+    /// Used at startup when an asset/system precondition is missing — preferable to
+    /// a silent `fatalError` that just produces a crash log.
+    static func fatalAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+        NSApp.terminate(nil)
+    }
+
     var catInstances: [CatInstance] = []
     var catConfigs: [CatConfig] = []
 
@@ -1630,12 +1767,18 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
         let metaPath = (catDir as NSString).appendingPathComponent("metadata.json")
 
         guard let metaData = FileManager.default.contents(atPath: metaPath) else {
-            fatalError("metadata.json introuvable: \(metaPath)")
+            CatAppDelegate.fatalAlert(
+                title: "Assets manquants",
+                message: "Impossible de trouver metadata.json :\n\(metaPath)\n\nVérifie que le dossier 'cute_orange_cat' est à côté du binaire ou dans Resources/.")
+            return
         }
         do {
             meta = try JSONDecoder().decode(Metadata.self, from: metaData)
         } catch {
-            fatalError("metadata.json invalide: \(error.localizedDescription)")
+            CatAppDelegate.fatalAlert(
+                title: "metadata.json invalide",
+                message: "Le fichier metadata.json est corrompu :\n\(error.localizedDescription)")
+            return
         }
         spriteW = CGFloat(meta.character.size.width)
         spriteH = CGFloat(meta.character.size.height)
@@ -1649,7 +1792,12 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
 
         recomputeSize()
 
-        guard let screen = NSScreen.main else { fatalError("Pas d'écran") }
+        guard let screen = NSScreen.main else {
+            CatAppDelegate.fatalAlert(
+                title: "Aucun écran détecté",
+                message: "CATAI ne peut pas démarrer sans écran principal.")
+            return
+        }
         screenW = screen.frame.width; screenH = screen.frame.height
 
         // Dock
@@ -1668,6 +1816,7 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
                                 name: catColors[0].names[L10n.lang] ?? "Citrouille")
             catConfigs = [def]; saveConfigs(catConfigs)
         }
+        purgeOrphanMemories(activeIds: Set(catConfigs.map { $0.id }))
         for (i, cfg) in catConfigs.enumerated() { createInstance(config: cfg, index: i) }
         if dockVisible { for cat in catInstances { cat.showOnDock(dockH: dockHeight) } }
 
@@ -1699,8 +1848,10 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: Cat Management
 
-    func createInstance(config: CatConfig, index: Int) {
-        guard let cd = colorDef(config.colorId) else { return }
+    /// Returns the freshly created CatInstance, or nil if the color id is unknown.
+    @discardableResult
+    func createInstance(config: CatConfig, index: Int) -> CatInstance? {
+        guard let cd = colorDef(config.colorId) else { return nil }
         let inst = CatInstance(config: config, colorDef: cd)
         let startX = screenW / 2 - displayW / 2 + CGFloat(index) * displayW * 1.5
         inst.setup(meta: meta, catDir: catDir, dw: displayW, dh: displayH,
@@ -1709,6 +1860,7 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
         inst.chatBubble?.debateEnabled = debateEnabled
         inst.onDebateRequested = { [weak self] cat, topic in self?.startDebate(from: cat, topic: topic) }
         catInstances.append(inst)
+        return inst
     }
 
     func addCat(colorId: String) {
@@ -1716,12 +1868,16 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
         // Prevent duplicate color
         guard !catConfigs.contains(where: { $0.colorId == colorId }) else { return }
 
-        let name = cd.names[L10n.lang] ?? cd.names["fr"] ?? cd.id
+        let name = cd.names.localized(default: cd.id)
         let cfg = CatConfig(id: UUID().uuidString, colorId: colorId, name: name)
         catConfigs.append(cfg); saveConfigs(catConfigs)
-        createInstance(config: cfg, index: catInstances.count)
-
-        let cat = catInstances.last!
+        // Capture the new instance directly — no `last!` (createInstance can fail silently).
+        guard let cat = createInstance(config: cfg, index: catInstances.count - 1) else {
+            // Roll back the config so we don't leak a phantom entry.
+            catConfigs.removeAll { $0.id == cfg.id }
+            saveConfigs(catConfigs)
+            return
+        }
         if dockVisible { cat.showOnDock(dockH: dockHeight) }
         else if let f = frontmostWindowFrame() {
             cat.moveToWindow(f, index: catInstances.count - 1, total: catInstances.count)
@@ -1735,6 +1891,9 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
         guard catConfigs.count > 1 else { return }
         guard let idx = catInstances.firstIndex(where: { $0.colorDef.id == colorId }) else { return }
         let cat = catInstances[idx]
+        // If this cat is currently in a debate, stop the whole debate cleanly so
+        // the engine doesn't try to access a freed window.
+        if debateEngine.isDebating { debateEngine.stop() }
         cat.cleanup(); catInstances.remove(at: idx)
         catConfigs.removeAll { $0.colorId == colorId }; saveConfigs(catConfigs)
         deleteMemory(cat.config.id)
@@ -1789,7 +1948,6 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
         guard catInstances.count >= 2, !debateEngine.isDebating else { return }
         // Close all chat bubbles first
         for cat in catInstances { cat.chatBubble?.hide() }
-        debateEngine.delegate = self
         debateEngine.start(topic: topic, cats: catInstances)
     }
 
@@ -1818,10 +1976,15 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
         ctrl.getConfigs = { [weak self] in self?.catConfigs ?? [] }
         ctrl.getPreview = { [weak self] colorId in
             guard let self = self, let cd = colorDef(colorId) else { return nil }
+            // Cached: same key shape as tintCache so we never retint the south rotation.
+            let key = "\(cd.id):preview" as NSString
+            if let hit = tintCache.object(forKey: key) { return hit }
             guard let southRel = self.meta.frames.rotations["south"] else { return nil }
             let path = (self.catDir as NSString).appendingPathComponent(southRel)
             guard let img = NSImage(contentsOfFile: path) else { return nil }
-            return tintSprite(img, color: cd)
+            let tinted = tintSprite(img, color: cd)
+            tintCache.setObject(tinted, forKey: key)
+            return tinted
         }
         ctrl.onAdd = { [weak self] colorId in self?.addCat(colorId: colorId) }
         ctrl.onRemove = { [weak self] colorId in self?.removeCat(colorId: colorId) }
@@ -1896,9 +2059,20 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Cached result of `frontmostWindowFrame()` and the time it was computed.
+    /// `CGWindowListCopyWindowInfo` is expensive — multiple call sites in the same
+    /// tick (trackWindows + addCat) are now coalesced via this short-lived cache.
+    private var cachedFrontmost: (frame: NSRect?, at: CFTimeInterval) = (nil, 0)
+    private let frontmostCacheTTL: CFTimeInterval = 0.2
+
     func frontmostWindowFrame() -> NSRect? {
+        let now = CACurrentMediaTime()
+        if now - cachedFrontmost.at < frontmostCacheTTL { return cachedFrontmost.frame }
+
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-                                                    kCGNullWindowID) as? [[String: Any]] else { return nil }
+                                                    kCGNullWindowID) as? [[String: Any]] else {
+            cachedFrontmost = (nil, now); return nil
+        }
         let myPID = ProcessInfo.processInfo.processIdentifier
         for w in list {
             guard let pid = w[kCGWindowOwnerPID as String] as? Int32, pid != myPID,
@@ -1911,8 +2085,11 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
                   wW > 100, wH > 100
             else { continue }
             let cocoaY = screenH - CGFloat(wY) - CGFloat(wH)
-            return NSRect(x: CGFloat(wX), y: cocoaY, width: CGFloat(wW), height: CGFloat(wH))
+            let rect = NSRect(x: CGFloat(wX), y: cocoaY, width: CGFloat(wW), height: CGFloat(wH))
+            cachedFrontmost = (rect, now)
+            return rect
         }
+        cachedFrontmost = (nil, now)
         return nil
     }
 
@@ -1978,10 +2155,18 @@ class CatAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Cancel any in-flight debate so its main-queue callbacks don't fire on dead state.
+        debateEngine.stop()
         timers.forEach { $0.invalidate() }
-        if let m = localMonitor { NSEvent.removeMonitor(m) }
-        if let m = globalMonitor { NSEvent.removeMonitor(m) }
-        for cat in catInstances { cat.cleanup() }
+        timers.removeAll()
+        hideTimer?.invalidate(); hideTimer = nil
+        if let m = localMonitor { NSEvent.removeMonitor(m); localMonitor = nil }
+        if let m = globalMonitor { NSEvent.removeMonitor(m); globalMonitor = nil }
+        for cat in catInstances {
+            cat.ollamaChat.cancel()  // close any streaming Ollama session
+            cat.cleanup()
+        }
+        catInstances.removeAll()
     }
 }
 
