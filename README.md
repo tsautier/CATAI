@@ -4,7 +4,7 @@ Virtual desktop pet cats for macOS — pixel art cats that live on your dock, ch
 
 ![Swift](https://img.shields.io/badge/Swift-native-orange) ![macOS](https://img.shields.io/badge/macOS-14%2B-blue) ![Ollama](https://img.shields.io/badge/Ollama-LLM-green)
 
-![CATAI Screenshot](screenshot.jpeg)
+![CATAI Screenshot](screenshot.webp)
 
 ## Features
 
