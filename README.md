@@ -127,6 +127,9 @@ Click the 🐱 menu bar icon → Settings:
 - Clicks on cats are ignored during a debate (no accidental flow break)
 - Bubbles auto-revert to interactive mode 8s after the synthesis appears
 
+![CATAI Screenshot](screenshot2.webp)
+
+
 ### v2.0.1 — Code quality pass: critical fixes & stability hardening (2026-04-16)
 - **Debate engine** rewritten as a stateful class — eliminates Swift 6 Sendable warnings
   - Validates each cat still exists before its turn (survives mid-debate cat removal)
