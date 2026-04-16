@@ -115,6 +115,19 @@ Click the 🐱 menu bar icon → Settings:
 
 ## Changelog
 
+### v2.0.1 — Code quality pass: critical fixes & stability hardening (2026-04-16)
+- **Debate engine** rewritten as a stateful class — eliminates Swift 6 Sendable warnings
+  - Validates each cat still exists before its turn (survives mid-debate cat removal)
+  - Generation counter invalidates stale callbacks if the debate is stopped
+  - `DispatchQueue.main.asyncAfter` instead of `Timer.scheduledTimer` from URLSession queue
+  - Public `stop()` called from `removeCat` and `applicationWillTerminate`
+- **Debate button** now appears reliably (didSet observer triggers bubble rebuild)
+- **OllamaChat** session race fixed — no more stale callbacks clearing newer requests
+- **Memory** — `tintCache` bounded (`NSCache`, 600 items), `getPreview` cached, orphan `mem_<UUID>` purged at startup, `URLSession` properly invalidated
+- **Robustness** — `fatalError` at startup → `NSAlert` with clear message, `addCat` rolls back on failure, `frontmostWindowFrame` cached (200 ms) to avoid hammering `CGWindowListCopyWindowInfo`
+- **Code organisation** — `BehaviorTuning` enum centralizes AI tuning knobs, `Dictionary.localized()` helper dedupes the L10n fallback pattern
+- Build is now clean: zero warnings, zero errors
+
 ### v2.0 — Cat Debate: brainstorm with your cats (2026-04-13)
 - **Debate mode** — Your cats now debate any topic together in a dedicated window
   - Each cat argues from its unique personality (philosopher, geek, poet, scientist...)
