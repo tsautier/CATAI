@@ -4,9 +4,11 @@ Virtual desktop pet cats for macOS — pixel art cats that live on your dock, ch
 
 ![Swift](https://img.shields.io/badge/Swift-native-orange) ![macOS](https://img.shields.io/badge/macOS-14%2B-blue) ![Ollama](https://img.shields.io/badge/Ollama-LLM-green)
 
-![CATAI Screenshot](screenshot.webp)
-
-https://github.com/wil-pe/CATAI/blob/main/CATAI.mp4
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=AtZwsXUj1-s">
+    <img src="https://img.youtube.com/vi/AtZwsXUj1-s/maxresdefault.jpg" width="700" alt="▶ Watch CATAI Demo"/>
+  </a>
+</p>
 
 ## Features
 
@@ -98,6 +100,8 @@ Click the 🐱 menu bar icon → Settings:
 - Color tinting via direct pixel manipulation in sRGB `CGContext`
 - Ollama streaming chat via `URLSessionDataDelegate`
 - Conversation memory persisted in `UserDefaults`
+
+  ![CATAI Screenshot](screenshot.webp)
 
 ## Project Structure
 
