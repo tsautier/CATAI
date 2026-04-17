@@ -4,7 +4,7 @@ Virtual desktop pet cats for macOS — pixel art cats that live on your dock, ch
 
 ![Swift](https://img.shields.io/badge/Swift-native-orange) ![macOS](https://img.shields.io/badge/macOS-14%2B-blue) ![Ollama](https://img.shields.io/badge/Ollama-LLM-green)
 
-![CATAI Screenshot](screenshot.webp)
+[![CATAI Demo](./assets/thumbnail.png)](https://github.com/wil-pe/CATAI/raw/main/assets/CATAI.mp4)
 
 ## Features
 
@@ -31,6 +31,8 @@ Virtual desktop pet cats for macOS — pixel art cats that live on your dock, ch
 | 🟤 Brown | Indiana | Adventurous storyteller | Epic tales |
 | 🟡 Cream | Caramel | Cuddly & comforting | Emotional support |
 | 🐾 Percy | Percy | Retro geek & hilarious | 80s-90s internet references |
+
+![CATAI Screenshot](screenshot.webp)
 
 ## Animations
 
