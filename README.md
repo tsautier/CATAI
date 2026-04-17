@@ -6,6 +6,8 @@ Virtual desktop pet cats for macOS — pixel art cats that live on your dock, ch
 
 ![CATAI Screenshot](screenshot.webp)
 
+https://github.com/wil-pe/CATAI/blob/main/CATAI.mp4
+
 ## Features
 
 - **Dock companion** — Cats walk along your dock with pixel-perfect animations
