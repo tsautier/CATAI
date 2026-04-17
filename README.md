@@ -5,7 +5,14 @@ Virtual desktop pet cats for macOS — pixel art cats that live on your dock, ch
 ![Swift](https://img.shields.io/badge/Swift-native-orange) ![macOS](https://img.shields.io/badge/macOS-14%2B-blue) ![Ollama](https://img.shields.io/badge/Ollama-LLM-green)
 
 <p align="center">
-  <img src="CATAI.gif" alt="CATAI Demo"/>
+  <img src="CATAI.gif" width="700" alt="CATAI Demo"/>
+</p>
+
+<p align="center">
+  🎥 Prefer a smoother experience?  
+  <a href="https://www.youtube.com/watch?v=AtZwsXUj1-s">
+    Watch the full demo video on YouTube
+  </a>
 </p>
 
 
